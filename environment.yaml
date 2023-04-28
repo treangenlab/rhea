@@ -1,0 +1,15 @@
+name: custom-SCOA
+
+channels:
+- bioconda
+- conda-forge
+
+dependencies:
+- biopython
+- python
+- pandas
+- networkx
+- scikit-learn
+- prodigal
+- diamond
+- cat
