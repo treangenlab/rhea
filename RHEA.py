@@ -13,6 +13,7 @@ import pandas as pd
 import networkx as nx
 from collections import defaultdict
 
+import logging
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
@@ -33,6 +34,7 @@ def weight_graph(graph_path):
     :param graph_path: (str) path to .gfa MetaFlye output
     :return: Weighted Networkx graph (G), dictionary of edge id to SeqRecord sequence (sequences)
     '''
+    logging.info("Reading in graph: {}".format(graph_path))
     G = nx.Graph()
     sequences = {}
     with open(graph_path, "r") as f:
@@ -72,9 +74,10 @@ def cluster_graph(G, sequences, genome_avg_len, output_path):
     :param sequences: dictionary of edge id to SeqRecord sequence
     :param genome_avg_len: expected average genome length for genomes in metagenome sample
     :param output_path: path to output clustered fasta files
-    :return:
+    :return: Pandas df mapping graph nodes to assigned clusters
     '''
-
+    logging.info("Clustering graphs, depending on the complexity of your graph, this may take several minutes;"
+                 " output to: {}".format(output_path))
     nodes_list, labels_list = [], []
     total_bins = 0
     for cc in nx.connected_components(G):
@@ -86,7 +89,7 @@ def cluster_graph(G, sequences, genome_avg_len, output_path):
             cluster_seqs = [sequences.pop(node) for node in cc]
             SeqIO.write(cluster_seqs, os.path.join(output_path, "{}.fna".format(total_bins)), "fasta")
         else:
-            sc = SpectralClustering(n_clusters=n_clusters, affinity='precomputed', assign_labels='cluster_qr')
+            sc = SpectralClustering(n_clusters=n_clusters, affinity='precomputed')
             sc.fit(A)
             next_labels = [i + total_bins for i in list(sc.labels_)]
             clusters_dict = defaultdict(list)
@@ -109,9 +112,9 @@ def classify_clusters(out_dir, clusters_dir, cat_db, cat_db_tax, threads):
     :param clusters_dir: path to directory of clustered fasta files (extension .fna)
     :param cat_db: path to CAT database
     :param cat_db_tax: path to CAT database taxonomy
-    :return: None
+    :return: path to bin2classifcation files with names added
     '''
-
+    logging.info("Classifying clusters ... thank you for your patience")
     cat_out_path = os.path.join(out_dir, "cat-out")
     subprocess.check_output("{} bins -b {} -d {} -t {} --path_to_diamond {} -o {} -f 0.1 -s .fna -n {}"
                             .format(CAT_EXEC, clusters_dir, cat_db, cat_db_tax,
@@ -124,12 +127,30 @@ def classify_clusters(out_dir, clusters_dir, cat_db, cat_db_tax, threads):
                             .format(CAT_EXEC, ORF2LCA_file, ORF2LCA_names, cat_db_tax), shell=True)
     subprocess.check_output("{} add_names -i {} -o {} -t {} --only_official"
                             .format(CAT_EXEC, bin2class_file, bin2class_names, cat_db_tax), shell=True)
-    return None
+    return bin2class_names
 
 
-def output_viral_interactions(table_viral, df_clusters):
-    df_viral = pd.read_csv(table_viral, sep='\t')
-    return None
+def get_viral_bins(table_viral, df_clusters, bin2class_names_path):
+    '''
+    Output information on bins containing viral sequences to infer phage interactions
+
+    :param table_viral: path to .csv file with viral edges
+    :param df_clusters: Pandas df of node-cluster mapping
+    :param bin2class_names_path: path to CAT bin2classifcation files with names added
+    :return: Pandas df with viral nodes and their cluster information
+    '''
+    logging.info("Detecting viral sequences")
+    df_viral = pd.read_csv(table_viral, dtype={'node' : 'int32'})
+    df_clusters = df_clusters.astype({'node' : 'int32'}).set_index('node')
+    df_viral = df_viral.merge(df_clusters, on='node', how='left')
+    if bin2class_names_path:
+        df_bin2class = pd.read_csv(bin2class_names_path, sep='\t')
+        df_bin2class['cluster'] = df_bin2class['# bin'].apply(lambda x: os.path.splitext(x)[0])
+        df_bin2class = df_bin2class.drop(columns=['# bin', 'classification', 'reason'])
+        df_bin2class = df_bin2class.astype({'cluster' : 'int32'}).set_index('cluster')
+        df_viral = df_viral.astype({'cluster' : 'int32'}).set_index('cluster')
+        df_viral = df_viral.merge(df_bin2class, on='cluster', how='left')
+    return df_viral
 
 def output_CRISPR_spacer_interactions(table_viral, df_clusters):
     return None
@@ -158,6 +179,9 @@ if __name__ == "__main__":
         '--keep-cluster-fa', action="store_true",
         help='keep temp fasta file for each cluster')
     parser.add_argument(
+        '--skip-classify', action="store_true",
+        help='Skip CAT classification step')
+    parser.add_argument(
         '--viral-table', type=str, default="",
         help='table of viral edges in graph with classifications')
     parser.add_argument(
@@ -170,31 +194,37 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # check CAT database and taxonomy are specified
-    if not args.cat_db:
-        raise ValueError("CAT database not specified. "
+    if not args.skip_classify:
+        if not args.cat_db:
+            raise ValueError("CAT database not specified. "
                          "Either 'export CAT_DB_DIR=<path_to_database>' or "
                          "utilize '--cat_db' parameter.")
-    if not args.cat_db_tax:
-        raise ValueError("CAT database taxonomy not specified. "
+        if not args.cat_db_tax:
+            raise ValueError("CAT database taxonomy not specified. "
                          "Either 'export CAT_DB_TAX_DIR=<path_to_database>' or "
                          "utilize '--cat_db_tax' parameter.")
 
     # create output directories
+    logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
-    output_clusters_dir = os.path.join(args.output_dir, "./clusters")
+    output_clusters_dir = os.path.join(args.output_dir, "clusters")
     if not os.path.exists(output_clusters_dir):
         os.makedirs(output_clusters_dir)
 
     # cluster & classify graph
     weighted_graph, seqs = weight_graph(args.input_graph)
     graph_clusters_df = cluster_graph(weighted_graph, seqs, args.avg_genome_len, output_clusters_dir)
-    graph_clusters_df.to_csv(os.path.join(args.output_dir, "./clusters.tsv"), sep='\t', index=False)
-    classify_clusters(args.output_dir, output_clusters_dir, args.cat_db, args.cat_db_tax, args.threads)
+    graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t', index=False)
+    out_bin2class_names = None
+    if not args.skip_classify:
+        out_bin2class_names = classify_clusters(args.output_dir, output_clusters_dir, args.cat_db, args.cat_db_tax, args.threads)
 
     # viral analysis
     if args.viral_table:
-        output_viral_interactions(args.viral_table, graph_clusters_df)
+        viral_df = get_viral_bins(args.viral_table, graph_clusters_df, out_bin2class_names)
+
+        viral_df.to_csv(os.path.join(args.output_dir, "bins-with-viral.tsv"), sep='\t')
         if args.CRISPR:
             output_CRISPR_spacer_interactions(args.viral_table, graph_clusters_df)
 
