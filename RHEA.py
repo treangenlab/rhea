@@ -19,11 +19,9 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from sklearn.cluster import SpectralClustering
 
-CAT_EXEC = os.path.join(os.path.dirname(__file__), 'exec', 'CAT')
-DIAMOND_EXEC = os.path.join(os.path.dirname(__file__), 'exec', 'diamond')
 __author__ = 'Kristen Curry'
 __version__ = '1.0.0'
-__date__ = 'April 2023'
+__date__ = 'May 2023'
 
 
 def weight_graph(graph_path):
@@ -31,7 +29,7 @@ def weight_graph(graph_path):
     Parses .gfa file from MetaFlye output into a networkx graph. Nodes are weighted by length of
     sequence. edges are weighted by coverage.
 
-    :param graph_path: (str) path to .gfa MetaFlye output
+    :str graph_path: path to .gfa MetaFlye output
     :return: Weighted Networkx graph (G), dictionary of edge id to SeqRecord sequence (sequences)
     """
     logging.info("Reading in graph: %s", graph_path)
@@ -71,11 +69,11 @@ def cluster_graph(graph, sequences, genome_avg_len, output_path):
     Performs spectral clustering on weighted graph, where number of clusters decided such that
     each cluster is the length of one genome.
 
-    :param G: weighted assembly graph. Nodes weighted by length of sequence.
+    :networkx.G graph: weighted assembly graph. Nodes weighted by length of sequence.
             Edges weighted by coverage between nodes.
-    :param sequences: dictionary of edge id to SeqRecord sequence
-    :param genome_avg_len: expected average genome length for genomes in metagenome sample
-    :param output_path: path to output clustered fasta files
+    :dict{str:SeqRecord} sequences: dictionary of edge id to SeqRecord sequence
+    :int genome_avg_len: expected average genome length for genomes in metagenome sample
+    :str output_path: path to output clustered fasta files
     :return: Pandas df mapping graph nodes to assigned clusters
     """
     logging.info("Clustering graphs, depending on the complexity of your graph, "
@@ -100,7 +98,7 @@ def cluster_graph(graph, sequences, genome_avg_len, output_path):
                 clusters_dict[label].append(component_nodes)
             for k, cluster_nodes in clusters_dict.items():
                 cluster_seqs = [sequences.pop(node) for node in cluster_nodes]
-                SeqIO.write(cluster_seqs, os.path.join(output_path, "{}.fa".format(k)), "fasta")
+                SeqIO.write(cluster_seqs, os.path.join(output_path, "{}.fna".format(k)), "fasta")
         nodes_list = nodes_list + list(connected_component)
         labels_list = labels_list + next_labels
         total_bins = total_bins + n_clusters
@@ -108,32 +106,30 @@ def cluster_graph(graph, sequences, genome_avg_len, output_path):
     return dataframe
 
 
-def classify_clusters(out_dir, clusters_dir, cat_db, cat_db_tax, n_threads):
+def classify_clusters(out_dir, clusters_dir, n_threads):
     """
     Classify clusters with BAT
 
-    :param out_dir: path to output files
-    :param clusters_dir: path to directory of clustered fasta files (extension .fna)
-    :param cat_db: path to CAT database
-    :param cat_db_tax: path to CAT database taxonomy
-    :param n_threads: number of threads [int]
+    :str out_dir: path to output files
+    :str clusters_dir: path to directory of clustered fasta files (extension .fna)
+    :int n_threads: number of threads
     :return: path to bin2classification files with names added
     """
     logging.info("Classifying clusters ... thank you for your patience")
     cat_out_path = os.path.join(out_dir, "cat-out")
     subprocess.check_output("{} bins -b {} -d {} -t {} --path_to_diamond {} -o {} -f 0.1 -s .fna"
                             " -n {}"
-                            .format(CAT_EXEC, clusters_dir, cat_db, cat_db_tax,
+                            .format(CAT_EXEC, clusters_dir, CAT_DB, CAT_TAX,
                                     DIAMOND_EXEC, cat_out_path, n_threads), shell=True)
     orf2lca_file = "{}.ORF2LCA.txt".format(cat_out_path)
     orf2lca_names = "{}.ORF2LCA-names.txt".format(cat_out_path)
     bin2class_file = "{}.bin2classification.txt".format(cat_out_path)
     bin2class_names = "{}.bin2classification-names.txt".format(cat_out_path)
     subprocess.check_output("{} add_names -i {} -o {} -t {} --only_official"
-                            .format(CAT_EXEC, orf2lca_file, orf2lca_names, cat_db_tax),
+                            .format(CAT_EXEC, orf2lca_file, orf2lca_names, CAT_TAX),
                             shell=True)
     subprocess.check_output("{} add_names -i {} -o {} -t {} --only_official"
-                            .format(CAT_EXEC, bin2class_file, bin2class_names, cat_db_tax),
+                            .format(CAT_EXEC, bin2class_file, bin2class_names, CAT_TAX),
                             shell=True)
     return bin2class_names
 
@@ -142,13 +138,13 @@ def get_viral_bins(table_viral, df_clusters, bin2class_names_path):
     """
     Output information on bins containing viral sequences to infer phage interactions
 
-    :param table_viral: path to .csv file with viral edges
-    :param df_clusters: Pandas df of node-cluster mapping
-    :param bin2class_names_path: path to CAT bin2classification files with names added
+    :str table_viral: path to .csv file with viral edges
+    :pd.DataFrame df_clusters: Pandas df of node-cluster mapping
+    :str bin2class_names_path: path to CAT bin2classification files with names added
     :return: Pandas df with viral nodes and their cluster information
     """
     logging.info("Placing viral sequences")
-    df_viral = pd.read_csv(table_viral, dtype={'node': 'int32'})
+    df_viral = pd.read_csv(table_viral, dtype={'node': 'int32'}, sep='\t', index_col='node')
     df_clusters = df_clusters.astype({'node': 'int32'}).set_index('node')
     df_viral = df_viral.merge(df_clusters, on='node', how='left')
     if bin2class_names_path:
@@ -178,11 +174,17 @@ if __name__ == "__main__":
         "input_graph", type=str,
         help="path to .gfa assembly graph")
     parser.add_argument(
+        "--cat_pack", type=str, default=os.environ.get("CAT_PACK"),
+        help="path to CAT_pack install")
+    parser.add_argument(
         "--cat_db", type=str, default=os.environ.get("CAT_DB_DIR"),
         help="path to CAT database")
     parser.add_argument(
         "--cat_db_tax", type=str, default=os.environ.get("CAT_DB_TAX_DIR"),
         help="path to CAT taxonomy database")
+    parser.add_argument(
+        "--diamond_exec", type=str, default=os.environ.get("DIAMOND_EXEC"),
+        help="path to DIAMOND executable")
     parser.add_argument(
         '--output-dir', type=str, default="./RHEA_results",
         help='output directory name [./RHEA_results]')
@@ -207,19 +209,30 @@ if __name__ == "__main__":
     parser.add_argument(
         '--threads', type=int, default=3,
         help='threads utilized by DIAMOND [3]')
-
     args = parser.parse_args()
 
     # check CAT database and taxonomy are specified
     if not args.skip_classify:
-        if not args.cat_db:
+        CAT_EXEC = os.path.join(args.cat_pack, "CAT")
+        CAT_DB = args.cat_db
+        CAT_TAX = args.cat_db_tax
+        DIAMOND_EXEC = args.diamond_exec
+        if not args.cat_pack:
+            raise ValueError("CAT executable not specified. "
+                             "Either 'export CAT_PACK=<path_to_CAT_pack>' or "
+                             "utilize '--cat_pack' parameter.")
+        if not CAT_DB:
             raise ValueError("CAT database not specified. "
                              "Either 'export CAT_DB_DIR=<path_to_database>' or "
                              "utilize '--cat_db' parameter.")
-        if not args.cat_db_tax:
+        if not CAT_TAX:
             raise ValueError("CAT database taxonomy not specified. "
                              "Either 'export CAT_DB_TAX_DIR=<path_to_database>' or "
                              "utilize '--cat_db_tax' parameter.")
+        if not DIAMOND_EXEC:
+            raise ValueError("DIAMOND executable not specified. "
+                             "Either 'export DIAMOND_EXEC=<path_to_DIAMOND_exec>' or "
+                             "utilize '--diamond_exec' parameter.")
 
     # create output directories
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p',
@@ -236,14 +249,14 @@ if __name__ == "__main__":
     else:
         weighted_graph, seqs = weight_graph(args.input_graph)
         graph_clusters_df = cluster_graph(weighted_graph, seqs, args.avg_genome_len,
-                                        output_clusters_dir)
+                                          output_clusters_dir)
         graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t', index=False)
 
     # classify clusters
     CLUSTER_CLASS = None
     if not args.skip_classify:
         CLUSTER_CLASS = classify_clusters(args.output_dir, output_clusters_dir,
-                                          args.cat_db, args.cat_db_tax, args.threads)
+                                          args.threads)
     # viral analysis
     if args.viral_table:
         viral_df = get_viral_bins(args.viral_table, graph_clusters_df, CLUSTER_CLASS)
