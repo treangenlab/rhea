@@ -10,7 +10,7 @@ import math
 import logging
 import argparse
 import subprocess
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 import pandas as pd
 import networkx as nx
@@ -22,6 +22,9 @@ from sklearn.cluster import SpectralClustering
 __author__ = 'Kristen Curry'
 __version__ = '1.0.0'
 __date__ = 'May 2023'
+
+TAX_RANKS = ['superkingdom', 'phylum', 'class', 'order',
+                                          'family', 'genus', 'species']
 
 
 def weight_graph(graph_path):
@@ -64,7 +67,8 @@ def weight_graph(graph_path):
     return graph, sequences
 
 
-def cluster_graph(graph, sequences, genome_avg_len, output_path):
+def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
+                  output_path_clusters, output_path_fragments):
     """
     Performs spectral clustering on weighted graph, where number of clusters decided such that
     each cluster is the length of one genome.
@@ -73,23 +77,37 @@ def cluster_graph(graph, sequences, genome_avg_len, output_path):
             Edges weighted by coverage between nodes.
     :dict{str:SeqRecord} sequences: dictionary of edge id to SeqRecord sequence
     :int genome_avg_len: expected average genome length for genomes in metagenome sample
-    :str output_path: path to output clustered fasta files
+    :int genome_min_len: minimum genome length for genomes in metagenome sample. Used as a
+            threshold for clusters vs fragments
+    :str output_path_clusters: path to output clustered fasta files
+    :str output_path_fragments: path to output fragments fasta files
     :return: Pandas df mapping graph nodes to assigned clusters
     """
     logging.info("Clustering graphs, depending on the complexity of your graph, "
-                 "this may take several minutes; output to: %s", output_path)
-    nodes_list, labels_list = [], []
+                 "this may take several minutes; output to: %s", output_path_clusters)
+    cluster_nodes, cluster_labels = [], []
+    fragment_nodes, fragment_labels = [], []
+    cluster_stats = {}  # track number of nodes and cum node weight for each cluster
     total_bins = 0
     for connected_component in nx.connected_components(graph):
         adj_matrix = nx.to_numpy_array(graph, nodelist=list(connected_component))
         length_sum = sum([graph.nodes("weight")[node] for node in connected_component])
         n_clusters = math.ceil(length_sum / genome_avg_len)
-        if n_clusters == 1:
+        if n_clusters == 1 or len(connected_component) < 3: # connected component is one cluster
             next_labels = [total_bins] * len(connected_component)
             cluster_seqs = [sequences.pop(node) for node in connected_component]
-            SeqIO.write(cluster_seqs, os.path.join(output_path, "{}.fna".format(total_bins)),
-                        "fasta")
-        else:
+            if length_sum < genome_min_len:  # add to fragments list if len_sum under threshold
+                SeqIO.write(cluster_seqs, os.path.join(output_path_fragments, "{}.fna".format(total_bins)),
+                            "fasta")
+                fragment_nodes = fragment_nodes + list(connected_component)
+                fragment_labels = fragment_labels + next_labels
+            else:  # else add to clusters
+                SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.fna".format(total_bins)),
+                            "fasta")
+                cluster_nodes = cluster_nodes + list(connected_component)
+                cluster_labels = cluster_labels + next_labels
+            cluster_stats[total_bins] = (length_sum, len(connected_component))
+        else:  # if cc has more than one cluster
             spec_clust = SpectralClustering(n_clusters=n_clusters, affinity='precomputed')
             spec_clust.fit(adj_matrix)
             next_labels = [i + total_bins for i in list(spec_clust.labels_)]
@@ -97,26 +115,40 @@ def cluster_graph(graph, sequences, genome_avg_len, output_path):
             for label, component_nodes in zip(next_labels, list(connected_component)):
                 clusters_dict[label].append(component_nodes)
             for k, cluster_nodes in clusters_dict.items():
+                length_cluster = sum([graph.nodes("weight")[node] for node in cluster_nodes])
+                cluster_stats[k] = (length_cluster, len(cluster_nodes))
                 cluster_seqs = [sequences.pop(node) for node in cluster_nodes]
-                SeqIO.write(cluster_seqs, os.path.join(output_path, "{}.fna".format(k)), "fasta")
-        nodes_list = nodes_list + list(connected_component)
-        labels_list = labels_list + next_labels
+                SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.fna".format(k)), "fasta")
+            cluster_nodes = cluster_nodes + list(connected_component)
+            cluster_labels = cluster_labels + next_labels
         total_bins = total_bins + n_clusters
-    dataframe = pd.DataFrame({'node': nodes_list, 'cluster': labels_list})
-    return dataframe
+    clusters_dataframe = pd.DataFrame({"node": cluster_nodes,
+                                       "cluster": cluster_labels})
+    clusters_dataframe["cluster_length"] = clusters_dataframe["cluster"]\
+        .apply(lambda x: cluster_stats[x][0])
+    clusters_dataframe["cluster_size"] = clusters_dataframe["cluster"]\
+        .apply(lambda x: cluster_stats[x][1])
+    fragments_dataframe = pd.DataFrame({"node": fragment_nodes,
+                                        "cluster": fragment_labels})
+    fragments_dataframe["fragment_length"] = fragments_dataframe["cluster"]\
+        .apply(lambda x: cluster_stats[x][0])
+    fragments_dataframe["fragment_size"] = fragments_dataframe["cluster"]\
+        .apply(lambda x: cluster_stats[x][1])
+    return clusters_dataframe, fragments_dataframe
 
 
-def classify_clusters(out_dir, clusters_dir, n_threads):
+def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
     """
     Classify clusters with BAT
 
     :str out_dir: path to output files
     :str clusters_dir: path to directory of clustered fasta files (extension .fna)
+    :str group_type: denote if clusters or fragments
     :int n_threads: number of threads
     :return: path to bin2classification files with names added
     """
-    logging.info("Classifying clusters ... thank you for your patience")
-    cat_out_path = os.path.join(out_dir, "cat-out")
+    logging.info("Classifying %s ... thank you for your patience", group_type)
+    cat_out_path = os.path.join(out_dir, "cat-out-{}".format(group_type))
     subprocess.check_output("{} bins -b {} -d {} -t {} --path_to_diamond {} -o {} -f 0.1 -s .fna"
                             " -n {}"
                             .format(CAT_EXEC, clusters_dir, CAT_DB, CAT_TAX,
@@ -134,26 +166,31 @@ def classify_clusters(out_dir, clusters_dir, n_threads):
     return bin2class_names
 
 
-def get_viral_bins(table_viral, df_clusters, bin2class_names_path):
+def get_viral_bins(table_viral, df_clusters, bin2class_names_path, group_type):
     """
     Output information on bins containing viral sequences to infer phage interactions
 
     :str table_viral: path to .csv file with viral edges
     :pd.DataFrame df_clusters: Pandas df of node-cluster mapping
     :str bin2class_names_path: path to CAT bin2classification files with names added
+    :str group_type: denote if clusters or fragments
     :return: Pandas df with viral nodes and their cluster information
     """
-    logging.info("Placing viral sequences")
-    df_viral = pd.read_csv(table_viral, dtype={'node': 'int32'}, sep='\t', index_col='node')
-    df_clusters = df_clusters.astype({'node': 'int32'}).set_index('node')
-    df_viral = df_viral.merge(df_clusters, on='node', how='left')
+    ## clean this up to include node weight of cluster/fragment
+    ## how to handle duplicate rows for the same viral seq
+
+    logging.info("Placing viral sequences in {}".format(group_type))
+    df_viral = pd.read_csv(table_viral, dtype={"node": "int32"}, sep="\t", index_col="node")
+    df_clusters = df_clusters.astype({"node": "int32"}).set_index("node")
+    df_viral = df_viral.merge(df_clusters, on="node", how="inner")
     if bin2class_names_path:
-        df_bin2class = pd.read_csv(bin2class_names_path, sep='\t')
-        df_bin2class['cluster'] = df_bin2class['# bin'].apply(lambda x: os.path.splitext(x)[0])
-        df_bin2class = df_bin2class.drop(columns=['# bin', 'classification', 'reason'])
-        df_bin2class = df_bin2class.astype({'cluster': 'int32'}).set_index('cluster')
-        df_viral = df_viral.astype({'cluster': 'int32'}).set_index('cluster')
-        df_viral = df_viral.merge(df_bin2class, on='cluster', how='left')
+        df_bin2class = pd.read_csv(bin2class_names_path, sep="\t")
+        df_bin2class["cluster"] = df_bin2class["# bin"].apply(lambda x: os.path.splitext(x)[0])
+        df_bin2class = df_bin2class.astype({"cluster": "int32"})
+        df_bin2class_flat = df_bin2class[["cluster"] + TAX_RANKS]
+        df_bin2class_flat = df_bin2class_flat.groupby("cluster", as_index=False)[TAX_RANKS].agg(lambda x: list(x))
+        df_viral = df_viral.astype({"cluster": "int32"})
+        df_viral = df_viral.merge(df_bin2class_flat, on="cluster", how="left")
     return df_viral
 
 
@@ -192,8 +229,14 @@ if __name__ == "__main__":
         '--avg-genome-len', type=int, default=4000000,
         help='average length of genomes in sample [4000000]')
     parser.add_argument(
+        '--min-genome-len', type=int, default=500000,
+        help='min length of genomes in sample [500000]')
+    parser.add_argument(
         '--keep-cluster-fa', action="store_true",
         help='keep temp fasta file for each cluster')
+    parser.add_argument(
+        '--input-classifications', nargs=2, metavar=('clusters_class', 'fragments_class'),
+        help='input classifications if skipping CAT classification step')
     parser.add_argument(
         '--skip-classify', action="store_true",
         help='Skip CAT classification step')
@@ -239,27 +282,50 @@ if __name__ == "__main__":
                         level=logging.INFO)
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
-    output_clusters_dir = os.path.join(args.output_dir, "clusters")
-    if not os.path.exists(output_clusters_dir):
-        os.makedirs(output_clusters_dir)
 
     # cluster graph
     if args.skip_clustering:
+        # read in existing clusters mapping file
         graph_clusters_df = pd.read_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t')
+        graph_fragments_df = pd.read_csv(os.path.join(args.output_dir, "fragments.tsv"), sep='\t')
     else:
+        # create directories for clusters and fragments
+        output_clusters_dir = os.path.join(args.output_dir, "clusters")
+        output_fragments_dir = os.path.join(output_clusters_dir, "fragments")
+        if not os.path.exists(output_clusters_dir):
+            os.makedirs(output_clusters_dir)
+        if not os.path.exists(output_fragments_dir):
+            os.makedirs(output_fragments_dir)
+        # create and cluster RHEA graph
         weighted_graph, seqs = weight_graph(args.input_graph)
-        graph_clusters_df = cluster_graph(weighted_graph, seqs, args.avg_genome_len,
-                                          output_clusters_dir)
+        graph_clusters_df, graph_fragments_df = cluster_graph(weighted_graph, seqs,
+                                                              args.avg_genome_len,
+                                                              args.min_genome_len,
+                                                              output_clusters_dir,
+                                                              output_fragments_dir)
         graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t', index=False)
+        graph_fragments_df.to_csv(os.path.join(args.output_dir, "fragments.tsv"), sep='\t', index=False)
 
     # classify clusters
-    CLUSTER_CLASS = None
     if not args.skip_classify:
-        CLUSTER_CLASS = classify_clusters(args.output_dir, output_clusters_dir,
-                                          args.threads)
+        CLUSTER_CLASSIFICATIONS = classify_clusters(args.output_dir, output_clusters_dir,
+                                                    "clusters", args.threads)
+        FRAGMENT_CLASSIFICATIONS = classify_clusters(args.output_dir, output_fragments_dir,
+                                                     "fragments", args.threads)
+    elif args.input_classifications:
+        clusters_class, fragments_class = args.input_classifications
+        CLUSTER_CLASSIFICATIONS = clusters_class
+        FRAGMENT_CLASSIFICATIONS = fragments_class
+    else:
+        CLUSTER_CLASSIFICATIONS, FRAGMENT_CLASSIFICATIONS = None, None
+
     # viral analysis
     if args.viral_table:
-        viral_df = get_viral_bins(args.viral_table, graph_clusters_df, CLUSTER_CLASS)
-        viral_df.to_csv(os.path.join(args.output_dir, "bins-with-viral.tsv"), sep='\t')
+        viral_df_clusters = get_viral_bins(args.viral_table, graph_clusters_df,
+                                           CLUSTER_CLASSIFICATIONS, "cluster")
+        viral_df_clusters.to_csv(os.path.join(args.output_dir, "clusters-with-viral.tsv"), sep='\t', index=False)
+        viral_df_fragments = get_viral_bins(args.viral_table, graph_fragments_df,
+                                            FRAGMENT_CLASSIFICATIONS, "fragment")
+        viral_df_fragments.to_csv(os.path.join(args.output_dir, "fragments-with-viral.tsv"), sep='\t', index=False)
         if args.CRISPR:
             output_crispr_spacer_interactions(args.viral_table, graph_clusters_df)
