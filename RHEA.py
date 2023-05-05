@@ -23,8 +23,7 @@ __author__ = 'Kristen Curry'
 __version__ = '1.0.0'
 __date__ = 'May 2023'
 
-TAX_RANKS = ['superkingdom', 'phylum', 'class', 'order',
-                                          'family', 'genus', 'species']
+TAX_RANKS = ['superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
 
 
 def weight_graph(graph_path):
@@ -85,7 +84,7 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
     """
     logging.info("Clustering graphs, depending on the complexity of your graph, "
                  "this may take several minutes; output to: %s", output_path_clusters)
-    cluster_nodes, cluster_labels = [], []
+    all_nodes, cluster_labels = [], []
     fragment_nodes, fragment_labels = [], []
     cluster_stats = {}  # track number of nodes and cum node weight for each cluster
     total_bins = 0
@@ -104,7 +103,7 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
             else:  # else add to clusters
                 SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.fna".format(total_bins)),
                             "fasta")
-                cluster_nodes = cluster_nodes + list(connected_component)
+                all_nodes = all_nodes + list(connected_component)
                 cluster_labels = cluster_labels + next_labels
             cluster_stats[total_bins] = (length_sum, len(connected_component))
         else:  # if cc has more than one cluster
@@ -119,10 +118,10 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                 cluster_stats[k] = (length_cluster, len(cluster_nodes))
                 cluster_seqs = [sequences.pop(node) for node in cluster_nodes]
                 SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.fna".format(k)), "fasta")
-            cluster_nodes = cluster_nodes + list(connected_component)
+            all_nodes = all_nodes + list(connected_component)
             cluster_labels = cluster_labels + next_labels
         total_bins = total_bins + n_clusters
-    clusters_dataframe = pd.DataFrame({"node": cluster_nodes,
+    clusters_dataframe = pd.DataFrame({"node": all_nodes,
                                        "cluster": cluster_labels})
     clusters_dataframe["cluster_length"] = clusters_dataframe["cluster"]\
         .apply(lambda x: cluster_stats[x][0])
