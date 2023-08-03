@@ -282,7 +282,7 @@ def output_crispr_spacer_interactions(dir_fragments, dir_minced_output, dir_spac
     :return:
     """
     # run spacepharer between CRISPR in clusters and fragments
-    logging.info("Running spacepharer; output to: %s", dir_minced_output)
+    logging.info("Running spacepharer; output to: %s", dir_spacepharer_output)
     fragments_all = os.path.join(dir_fragments, "*.{}".format(FASTA_EXT))
     minced_all = os.path.join(dir_minced_output, "*.{}".format("minced"))
     os.chdir(dir_spacepharer_output)
@@ -327,7 +327,7 @@ if __name__ == "__main__":
         "--spacepharer_exec", type=str, default="spacepharer",
         help="path to spacepharer exectuable")
     parser.add_argument(
-        '--output-dir', type=str, default="./RHEA_results",
+        '--output-dir', type=str, default=os.path.join(os.getcwd(), "RHEA_results"),
         help='output directory name [./RHEA_results]')
     parser.add_argument(
         '--avg-genome-len', type=int, default=4000000,
@@ -399,8 +399,8 @@ if __name__ == "__main__":
         os.makedirs(args.output_dir)
     output_clusters_dir = os.path.join(args.output_dir, "clusters")
     output_fragments_dir = os.path.join(output_clusters_dir, "fragments")
-    output_minced_dir = os.path.join(output_clusters_dir, "minced")
-    output_spacepharer_dir = os.path.join(output_clusters_dir, "spacepharer")
+    output_minced_dir = os.path.join(args.output_dir, "minced")
+    output_spacepharer_dir = os.path.join(args.output_dir, "spacepharer")
 
     # cluster graph
     if args.skip_clustering:
@@ -457,6 +457,7 @@ if __name__ == "__main__":
     if args.CRISPR:
         if not os.path.exists(output_minced_dir):
             os.makedirs(output_minced_dir)
+        if not os.path.exists(output_spacepharer_dir):
             os.makedirs(output_spacepharer_dir)
         output_crispr(output_clusters_dir, output_minced_dir, args.minced_exec, args.threads)
         output_crispr_spacer_interactions(output_fragments_dir, output_minced_dir,
