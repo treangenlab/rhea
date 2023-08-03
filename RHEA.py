@@ -10,8 +10,10 @@ import math
 import logging
 import argparse
 import subprocess
+from pathlib import Path
 from collections import defaultdict
 
+import numpy as np
 import pandas as pd
 import networkx as nx
 from Bio import SeqIO
@@ -24,6 +26,7 @@ __version__ = '1.0.0'
 __date__ = 'May 2023'
 
 TAX_RANKS = ['superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
+FASTA_EXT = "fna"
 
 
 def weight_graph(graph_path):
@@ -69,9 +72,37 @@ def weight_graph(graph_path):
     nodes_df = pd.DataFrame(nodes_data, columns=['node', 'node_length', 'node_depth'])
     return graph, sequences, nodes_df
 
+def get_cc_stats(graph_cc, sum_length, n_nodes):
+    """
+    :param graph_cc: a graph that is a single connected component
+    :return: desired graph metrics
+    """
+    n_edges = len(graph_cc.edges)
+    density = nx.density(graph_cc)
+    degree_dict = dict(graph_cc.degree())
+    avg_degree = sum(degree_dict.values()) / len(degree_dict)
+    highest_degree = max(degree_dict.values())
+    clustering_coef = nx.average_clustering(graph_cc)
+    n_self_loop = nx.number_of_selfloops(graph_cc)
+    nodes_bps = nx.get_node_attributes(graph_cc, 'size').values()
+    avg_node_bp =  sum(nodes_bps) / len(nodes_bps)
+    median_node_bp = np.median(list(nodes_bps))
+    edge_weights = nx.get_edge_attributes(graph_cc, 'weight').values()
+    avg_edge_weight, median_edge_weight = np.nan, np.nan
+    if len(edge_weights) > 0 :
+        avg_edge_weight = sum(edge_weights) / len(edge_weights)
+        median_edge_weight = np.median(list(edge_weights))
+
+    return {"# nodes": n_nodes, "# edges": n_edges, "total length (bp)": sum_length,
+            "mean node length": avg_node_bp, "median node length": median_node_bp,
+            "mean edge weight": avg_edge_weight, "median edge weight": median_edge_weight,
+            "density": density, "mean degree": avg_degree, "highest degree": highest_degree,
+            "# self loops": n_self_loop, "clustering coefficient": clustering_coef}
+
 
 def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
-                  nodes_df, output_path_clusters, output_path_fragments):
+                  nodes_df, output_path_clusters, output_path_fragments,
+                  skip_output_fasta):
     """
     Performs spectral clustering on weighted graph, where number of clusters decided such that
     each cluster is the length of one genome.
@@ -90,30 +121,38 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
     logging.info("Clustering graphs, depending on the complexity of your graph, "
                  "this may take several minutes; output to: %s", output_path_clusters)
     all_nodes, cluster_labels = [], []
+    cut_edges_nodes, cut_edges_weights, cut_edges_clusters = [], [], []
     fragment_nodes, fragment_labels = [], []
-    cluster_stats = {}  # track number of nodes and cum node weight for each cluster
+    cluster_stats = {}  # track number of nodes and cumulative node weight for each cluster
     total_bins = 0
     for connected_component in nx.connected_components(graph):
         adj_matrix = nx.to_numpy_array(graph, nodelist=list(connected_component))
         length_sum = sum([int(graph.nodes("size")[node]) for node in connected_component])
         n_clusters = math.ceil(length_sum / genome_avg_len)
-        if n_clusters == 1 or len(connected_component) < 3:  # connected component is one cluster
+        if n_clusters == 1 or len(connected_component) < 3:  # connected component is one cluster or fragment
             next_labels = [total_bins] * len(connected_component)
             if sequences:
                 cluster_seqs = [sequences.pop(node) for node in connected_component]
             if length_sum < genome_min_len:  # add to fragments list if len_sum under threshold
-                if sequences:
-                    SeqIO.write(cluster_seqs, os.path.join(output_path_fragments, "{}.fna".format(total_bins)),
+                if sequences and not skip_output_fasta:
+                    SeqIO.write(cluster_seqs, os.path.join(output_path_fragments, "{}.{}".format(total_bins,FASTA_EXT)),
                                 "fasta")
                 fragment_nodes = fragment_nodes + list(connected_component)
                 fragment_labels = fragment_labels + next_labels
             else:  # else add to clusters
-                if sequences:
-                    SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.fna".format(total_bins)),
+                if sequences and not skip_output_fasta:
+                    SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.{}".format(total_bins,FASTA_EXT)),
                                 "fasta")
                 all_nodes = all_nodes + list(connected_component)
                 cluster_labels = cluster_labels + next_labels
-            cluster_stats[total_bins] = (length_sum, len(connected_component))
+                cuts = [[] for _ in range(len(next_labels))]
+                cut_edges_nodes = cut_edges_nodes + cuts
+                cut_edges_clusters = cut_edges_clusters + cuts
+                cut_edges_weights = cut_edges_weights + cuts
+                cluster_stats[total_bins] = get_cc_stats(graph.subgraph(connected_component),
+                                                     length_sum, len(connected_component))
+
+
         else:  # if cc has more than one cluster
             spec_clust = SpectralClustering(n_clusters=n_clusters, affinity='precomputed')
             spec_clust.fit(adj_matrix)
@@ -123,29 +162,44 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                 clusters_dict[label].append(component_nodes)
             for k, cluster_nodes in clusters_dict.items():
                 length_cluster = sum([graph.nodes("size")[node] for node in cluster_nodes])
-                cluster_stats[k] = (length_cluster, len(cluster_nodes))
-                if sequences:
+                cluster_stats[k] = get_cc_stats(graph.subgraph(cluster_nodes),
+                                                         length_cluster, len(cluster_nodes))
+                if sequences and not skip_output_fasta:
                     cluster_seqs = [sequences.pop(node) for node in cluster_nodes]
-                    SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.fna".format(k)), "fasta")
+                    SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.{}".format(k, FASTA_EXT)), "fasta")
             all_nodes = all_nodes + list(connected_component)
             cluster_labels = cluster_labels + next_labels
+
+            ## adj_matrix after spectral clustering
+            n_nodes = len(list(connected_component))
+            clustered_adj_matrix = np.zeros((n_nodes, n_nodes), dtype=int)
+            for i in range(n_nodes):
+                for j in range(n_nodes):
+                    if cluster_labels[i] == cluster_labels[j]:
+                        clustered_adj_matrix[i, j] = adj_matrix[i, j]
+            cut_nodes_matrix = adj_matrix - clustered_adj_matrix
+
+            ## get information on cut edges
+            for i in range(n_nodes):
+                cut_indexes = [int(val) for val in np.where(cut_nodes_matrix[i])[0]]
+                cut_edges_nodes.append([int(val) for val in [list(connected_component)[cut_index] for cut_index in cut_indexes]])
+                cut_edges_clusters.append([next_labels[cut_index] for cut_index in cut_indexes])
+                cut_edges_weights.append([int(val) for val in cut_nodes_matrix[i][cut_nodes_matrix[i] != 0]])
         total_bins = total_bins + n_clusters
     clusters_dataframe = pd.DataFrame({"node": all_nodes,
                                        "cluster": cluster_labels})
     clusters_dataframe = clusters_dataframe.merge(nodes_df, on="node", how="left")
-    clusters_dataframe["cluster_length"] = clusters_dataframe["cluster"] \
-        .apply(lambda x: cluster_stats[x][0])
-    clusters_dataframe["cluster_size"] = clusters_dataframe["cluster"] \
-        .apply(lambda x: cluster_stats[x][1])
+    clusters_dataframe["cut edges"] = cut_edges_nodes
+    clusters_dataframe["cut edges weights"] = cut_edges_weights
+    clusters_dataframe["cut edges clusters"] = cut_edges_clusters
+
     fragments_dataframe = pd.DataFrame({"node": fragment_nodes,
                                         "cluster": fragment_labels})
     fragments_dataframe = fragments_dataframe.merge(nodes_df, on="node", how="left")
-    fragments_dataframe["fragment_length"] = fragments_dataframe["cluster"] \
-        .apply(lambda x: cluster_stats[x][0])
-    fragments_dataframe["fragment_size"] = fragments_dataframe["cluster"] \
-        .apply(lambda x: cluster_stats[x][1])
+    cluster_info_df = pd.DataFrame(cluster_stats.values(), index=cluster_stats.keys())
     return clusters_dataframe.sort_values(['cluster', 'node']), \
-           fragments_dataframe.sort_values(['cluster', 'node'])
+           fragments_dataframe.sort_values(['cluster', 'node']), \
+           cluster_info_df.reset_index().rename(columns={'index': 'cluster'}).sort_values('cluster')
 
 
 def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
@@ -160,10 +214,10 @@ def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
     """
     logging.info("Classifying %s ... thank you for your patience", group_type)
     cat_out_path = os.path.join(out_dir, "cat-out-{}".format(group_type))
-    subprocess.check_output("{} bins -b {} -d {} -t {} --path_to_diamond {} -o {} -f 0.1 -s .fna"
+    subprocess.check_output("{} bins -b {} -d {} -t {} --path_to_diamond {} -o {} -f 0.1 -s {}"
                             " -n {}"
                             .format(CAT_EXEC, clusters_dir, CAT_DB, CAT_TAX,
-                                    DIAMOND_EXEC, cat_out_path, n_threads), shell=True)
+                                    DIAMOND_EXEC, cat_out_path, n_threads, FASTA_EXT), shell=True)
     orf2lca_file = "{}.ORF2LCA.txt".format(cat_out_path)
     orf2lca_names = "{}.ORF2LCA-names.txt".format(cat_out_path)
     bin2class_file = "{}.bin2classification.txt".format(cat_out_path)
@@ -191,7 +245,7 @@ def get_viral_bins(table_viral, df_clusters, bin2class_names_path, group_type):
     logging.info("Placing viral sequences in {}".format(group_type))
     df_viral = pd.read_csv(table_viral, dtype={"node": "int32"}, sep="\t", index_col="node")
     df_clusters = df_clusters.astype({"node": "int32"}).set_index("node")
-    df_viral = df_viral.merge(df_clusters, on="node", how="inner")
+    df_viral = df_viral.merge(df_clusters, on="node", how="inner").reset_index()
     if bin2class_names_path:
         df_bin2class = pd.read_csv(bin2class_names_path, sep="\t")
         df_bin2class["cluster"] = df_bin2class["# bin"].apply(lambda x: os.path.splitext(x)[0])
@@ -203,14 +257,49 @@ def get_viral_bins(table_viral, df_clusters, bin2class_names_path, group_type):
     return df_viral
 
 
-def output_crispr_spacer_interactions(table_viral, df_clusters):
-    """
+def output_crispr(dir_clusters, dir_minced_output, minced_exec, threads):
+    """ Run MinCED to detect all CRISPR in RHEA clusters
 
-    :param table_viral:
-    :param df_clusters:
+    :param dir_clusters
+    :param dir_minced_output
+    :param minced_path
     :return:
     """
+    # run MinCED on each cluster
+    logging.info("Running MinCED on each cluster; output to: %s", dir_minced_output)
+    for file in os.listdir(dir_clusters):
+        if file.endswith(FASTA_EXT):
+            file_stem = Path(file).stem
+            output_file = os.path.join(dir_minced_output, "{}.minced".format(file_stem))
+            subprocess.check_output("{} {} {}".format(minced_exec, os.path.join(dir_clusters, file), output_file), shell=True)
     return None
+
+
+def output_crispr_spacer_interactions(dir_fragments, dir_minced_output, dir_spacepharer_output,
+                                      spacepharer_exec, threads):
+    """ Run spacepharer between the CRISPR spacers detected in clusters and the RHEA fragments
+
+    :return:
+    """
+    # run spacepharer between CRISPR in clusters and fragments
+    logging.info("Running spacepharer; output to: %s", dir_minced_output)
+    fragments_all = os.path.join(dir_fragments, "*.{}".format(FASTA_EXT))
+    minced_all = os.path.join(dir_minced_output, "*.{}".format("minced"))
+    os.chdir(dir_spacepharer_output)
+
+    subprocess.check_output("{} createsetdb {} fragmentTargetSetDB spacepharer_tmp --threads {}"
+                            .format(spacepharer_exec, fragments_all, threads), shell=True)
+    subprocess.check_output("{} createsetdb {} fragmentControlSetDB spacepharer_tmp --reverse-fragments 1 --threads {}"
+                            .format(spacepharer_exec, fragments_all, threads), shell=True)
+    subprocess.check_output("{} parsespacer {} queryDB --threads {}"
+                            .format(spacepharer_exec, minced_all, threads), shell=True)
+    subprocess.check_output("{} createsetdb queryDB querySetDB spacepharer_tmp --extractorf-spacer 1 --threads {}"
+                            .format(spacepharer_exec, threads), shell=True)
+    subprocess.check_output("{} predictmatch querySetDB fragmentTargetSetDB fragmentControlSetDB "
+                            "spacepharer_results.tsv spacepharer_tmp --threads {}"
+                            .format(spacepharer_exec, threads), shell=True)
+    return None
+
 
 
 if __name__ == "__main__":
@@ -232,6 +321,12 @@ if __name__ == "__main__":
         "--diamond_exec", type=str, default=os.environ.get("DIAMOND_EXEC"),
         help="path to DIAMOND executable")
     parser.add_argument(
+        "--minced_exec", type=str, default="minced",
+        help="path to MinCED exectuable")
+    parser.add_argument(
+        "--spacepharer_exec", type=str, default="spacepharer",
+        help="path to spacepharer exectuable")
+    parser.add_argument(
         '--output-dir', type=str, default="./RHEA_results",
         help='output directory name [./RHEA_results]')
     parser.add_argument(
@@ -252,6 +347,9 @@ if __name__ == "__main__":
     parser.add_argument(
         '--skip-clustering', action="store_true",
         help='Skip clustering')
+    parser.add_argument(
+        '--skip-output-fasta', action="store_true",
+        help='Skip additional fasta output for each cluster')
     parser.add_argument(
         '--viral-table', type=str, default="",
         help='table of viral edges in graph with classifications')
@@ -286,11 +384,23 @@ if __name__ == "__main__":
                              "Either 'export DIAMOND_EXEC=<path_to_DIAMOND_exec>' or "
                              "utilize '--diamond_exec' parameter.")
 
+    # if CRISPR detection is on, check skip output fasta is off and executables
+    if args.CRISPR:
+        if args.skip_output_fasta:
+            raise ValueError("skip-output-fasta must be set to false "
+                         "in CRISPR detection mode.")
+        # check minced and spacepharer exectuables are active
+
+
     # create output directories
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=logging.INFO)
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
+    output_clusters_dir = os.path.join(args.output_dir, "clusters")
+    output_fragments_dir = os.path.join(output_clusters_dir, "fragments")
+    output_minced_dir = os.path.join(output_clusters_dir, "minced")
+    output_spacepharer_dir = os.path.join(output_clusters_dir, "spacepharer")
 
     # cluster graph
     if args.skip_clustering:
@@ -299,8 +409,6 @@ if __name__ == "__main__":
         graph_fragments_df = pd.read_csv(os.path.join(args.output_dir, "fragments.tsv"), sep='\t')
     else:
         # create directories for clusters and fragments
-        output_clusters_dir = os.path.join(args.output_dir, "clusters")
-        output_fragments_dir = os.path.join(output_clusters_dir, "fragments")
         if not os.path.exists(output_clusters_dir):
             os.makedirs(output_clusters_dir)
         if not os.path.exists(output_fragments_dir):
@@ -313,14 +421,17 @@ if __name__ == "__main__":
 
         else:
             weighted_graph, seqs, df_nodes = weight_graph(args.input_graph)
-        graph_clusters_df, graph_fragments_df = cluster_graph(weighted_graph, seqs,
+        graph_clusters_df, graph_fragments_df, cluster_info_df = cluster_graph(weighted_graph, seqs,
                                                               args.avg_genome_len,
                                                               args.min_genome_len,
                                                               df_nodes,
                                                               output_clusters_dir,
-                                                              output_fragments_dir)
+                                                              output_fragments_dir,
+                                                              args.skip_output_fasta)
         graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t', index=False)
         graph_fragments_df.to_csv(os.path.join(args.output_dir, "fragments.tsv"), sep='\t', index=False)
+        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t', index=False)
+
 
     # classify clusters
     if not args.skip_classify:
@@ -343,5 +454,11 @@ if __name__ == "__main__":
         viral_df_fragments = get_viral_bins(args.viral_table, graph_fragments_df,
                                             FRAGMENT_CLASSIFICATIONS, "fragment")
         viral_df_fragments.to_csv(os.path.join(args.output_dir, "fragments-with-viral.tsv"), sep='\t', index=False)
-        if args.CRISPR:
-            output_crispr_spacer_interactions(args.viral_table, graph_clusters_df)
+    if args.CRISPR:
+        if not os.path.exists(output_minced_dir):
+            os.makedirs(output_minced_dir)
+            os.makedirs(output_spacepharer_dir)
+        output_crispr(output_clusters_dir, output_minced_dir, args.minced_exec, args.threads)
+        output_crispr_spacer_interactions(output_fragments_dir, output_minced_dir,
+                                          output_spacepharer_dir, args.spacepharer_exec, args.threads)
+
