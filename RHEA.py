@@ -93,6 +93,7 @@ def get_cc_stats(graph_cc, sum_length, n_nodes):
         avg_edge_weight = sum(edge_weights) / len(edge_weights)
         median_edge_weight = np.median(list(edge_weights))
 
+
     return {"# nodes": n_nodes, "# edges": n_edges, "total length (bp)": sum_length,
             "mean node length": avg_node_bp, "median node length": median_node_bp,
             "mean edge weight": avg_edge_weight, "median edge weight": median_edge_weight,
@@ -122,6 +123,7 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                  "this may take several minutes; output to: %s", output_path_clusters)
     all_nodes, cluster_labels = [], []
     cut_edges_nodes, cut_edges_weights, cut_edges_clusters = [], [], []
+    betweenness_dict = {}
     fragment_nodes, fragment_labels = [], []
     cluster_stats = {}  # track number of nodes and cumulative node weight for each cluster
     total_bins = 0
@@ -151,6 +153,7 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                 cut_edges_weights = cut_edges_weights + cuts
                 cluster_stats[total_bins] = get_cc_stats(graph.subgraph(connected_component),
                                                      length_sum, len(connected_component))
+                betweenness_dict.update(nx.betweenness_centrality(graph.subgraph(connected_component)))
 
 
         else:  # if cc has more than one cluster
@@ -164,6 +167,8 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                 length_cluster = sum([graph.nodes("size")[node] for node in cluster_nodes])
                 cluster_stats[k] = get_cc_stats(graph.subgraph(cluster_nodes),
                                                          length_cluster, len(cluster_nodes))
+                betweenness_dict.update(nx.betweenness_centrality(graph.subgraph(cluster_nodes)))
+                #nx.approximate_current_flow_betweenness_centrality(graph.subgraph(cluster_nodes))
                 if sequences and not skip_output_fasta:
                     cluster_seqs = [sequences.pop(node) for node in cluster_nodes]
                     SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.{}".format(k, FASTA_EXT)), "fasta")
@@ -186,18 +191,23 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                 cut_edges_clusters.append([next_labels[cut_index] for cut_index in cut_indexes])
                 cut_edges_weights.append([int(val) for val in cut_nodes_matrix[i][cut_nodes_matrix[i] != 0]])
         total_bins = total_bins + n_clusters
+
     clusters_dataframe = pd.DataFrame({"node": all_nodes,
                                        "cluster": cluster_labels})
     clusters_dataframe = clusters_dataframe.merge(nodes_df, on="node", how="left")
     clusters_dataframe["cut edges"] = cut_edges_nodes
     clusters_dataframe["cut edges weights"] = cut_edges_weights
     clusters_dataframe["cut edges clusters"] = cut_edges_clusters
+    clusters_dataframe = clusters_dataframe.sort_values(['cluster', 'node'])
+    clusters_dataframe.set_index("node", inplace=True)
+    clusters_dataframe['betweenness'] = clusters_dataframe.index.map(betweenness_dict)
+
 
     fragments_dataframe = pd.DataFrame({"node": fragment_nodes,
                                         "cluster": fragment_labels})
     fragments_dataframe = fragments_dataframe.merge(nodes_df, on="node", how="left")
     cluster_info_df = pd.DataFrame(cluster_stats.values(), index=cluster_stats.keys())
-    return clusters_dataframe.sort_values(['cluster', 'node']), \
+    return clusters_dataframe, \
            fragments_dataframe.sort_values(['cluster', 'node']), \
            cluster_info_df.reset_index().rename(columns={'index': 'cluster'}).sort_values('cluster')
 
@@ -214,8 +224,8 @@ def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
     """
     logging.info("Classifying %s ... thank you for your patience", group_type)
     cat_out_path = os.path.join(out_dir, "cat-out-{}".format(group_type))
-    subprocess.check_output("{} bins -b {} -d {} -t {} --path_to_diamond {} -o {} -f 0.1 -s {}"
-                            " -n {}"
+    subprocess.check_output("{} bins -b {} -d {} -t {} --path_to_diamond {} -o {} -f 0.1 -n {}"
+                            " -s {}"
                             .format(CAT_EXEC, clusters_dir, CAT_DB, CAT_TAX,
                                     DIAMOND_EXEC, cat_out_path, n_threads, FASTA_EXT), shell=True)
     orf2lca_file = "{}.ORF2LCA.txt".format(cat_out_path)
