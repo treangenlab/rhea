@@ -109,12 +109,20 @@ def get_cc_stats(graph_cc, sum_length, n_nodes):
     # nx.approximate_current_flow_betweenness_centrality(graph_cc)
     triangles_dict_cc = nx.triangles(graph_cc)
     triangles_count = sum(triangles_dict_cc.values()) / 3
+
+    graph_cc_simple = graph_cc.copy()
+    graph_cc_simple.remove_edges_from(nx.selfloop_edges(graph_cc))
+    simple_cycles_list = sorted(nx.simple_cycles(graph_cc_simple, length_bound=4))
+    count_cycle_3 = sum(1 for sublist in simple_cycles_list if len(sublist) == 3)
+    count_cycle_4 = sum(1 for sublist in simple_cycles_list if len(sublist) == 4)
+
     return {"n nodes": n_nodes, "n edges": n_edges, "total length (bp)": sum_length,
             "mean node length": avg_node_bp, "median node length": median_node_bp,
             "mean edge weight": avg_edge_weight, "median edge weight": median_edge_weight,
             "density": density, "mean degree": avg_degree, "highest degree": highest_degree,
             "n self loops": n_self_loop, "clustering coefficient": clustering_coef,
             "mean betweenness": avg_betweenness, "n triangles": triangles_count,
+            "n cycles l3": count_cycle_3, "n cycles l4": count_cycle_4,
             "n stars 3": n_stars_d3, "n stars 4": n_stars_d4, "n stars 5": n_stars_d5,
             "n stars 6": n_stars_d6, "n stars 7": n_stars_d7, "n stars 10": n_stars_d10}, cc_degree_dict, betweenness_dict_cc, triangles_dict_cc
 
