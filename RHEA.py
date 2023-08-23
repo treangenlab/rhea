@@ -7,6 +7,7 @@
 
 import os
 import math
+import shutil
 import logging
 import argparse
 import subprocess
@@ -73,15 +74,26 @@ def weight_graph(graph_path):
     return graph, sequences, nodes_df
 
 def get_cc_stats(graph_cc, sum_length, n_nodes):
+
     """
     :param graph_cc: a graph that is a single connected component
+    sum_length:
+    n_nodes:
+
     :return: desired graph metrics
     """
     n_edges = len(graph_cc.edges)
     density = nx.density(graph_cc)
-    degree_dict = dict(graph_cc.degree())
-    avg_degree = sum(degree_dict.values()) / len(degree_dict)
-    highest_degree = max(degree_dict.values())
+    cc_degree_dict = dict(graph_cc.degree())
+    avg_degree = sum(cc_degree_dict.values()) / len(cc_degree_dict)
+    highest_degree = max(cc_degree_dict.values())
+    n_stars_d3 = sum(1 for value in cc_degree_dict.values() if value > 3)
+    n_stars_d4 = sum(1 for value in cc_degree_dict.values() if value > 4)
+    n_stars_d5 = sum(1 for value in cc_degree_dict.values() if value > 5)
+    n_stars_d6 = sum(1 for value in cc_degree_dict.values() if value > 6)
+    n_stars_d7 = sum(1 for value in cc_degree_dict.values() if value > 7)
+    n_stars_d10 = sum(1 for value in cc_degree_dict.values() if value > 10)
+
     clustering_coef = nx.average_clustering(graph_cc)
     n_self_loop = nx.number_of_selfloops(graph_cc)
     nodes_bps = nx.get_node_attributes(graph_cc, 'size').values()
@@ -92,13 +104,19 @@ def get_cc_stats(graph_cc, sum_length, n_nodes):
     if len(edge_weights) > 0 :
         avg_edge_weight = sum(edge_weights) / len(edge_weights)
         median_edge_weight = np.median(list(edge_weights))
-
-
-    return {"# nodes": n_nodes, "# edges": n_edges, "total length (bp)": sum_length,
+    betweenness_dict_cc = nx.betweenness_centrality(graph_cc)
+    avg_betweenness = sum(betweenness_dict_cc.values()) / len(betweenness_dict_cc)
+    # nx.approximate_current_flow_betweenness_centrality(graph_cc)
+    triangles_dict_cc = nx.triangles(graph_cc)
+    triangles_count = sum(triangles_dict_cc.values()) / 3
+    return {"n nodes": n_nodes, "n edges": n_edges, "total length (bp)": sum_length,
             "mean node length": avg_node_bp, "median node length": median_node_bp,
             "mean edge weight": avg_edge_weight, "median edge weight": median_edge_weight,
             "density": density, "mean degree": avg_degree, "highest degree": highest_degree,
-            "# self loops": n_self_loop, "clustering coefficient": clustering_coef}
+            "n self loops": n_self_loop, "clustering coefficient": clustering_coef,
+            "mean betweenness": avg_betweenness, "n triangles": triangles_count,
+            "n stars 3": n_stars_d3, "n stars 4": n_stars_d4, "n stars 5": n_stars_d5,
+            "n stars 6": n_stars_d6, "n stars 7": n_stars_d7, "n stars 10": n_stars_d10}, cc_degree_dict, betweenness_dict_cc, triangles_dict_cc
 
 
 def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
@@ -123,7 +141,7 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                  "this may take several minutes; output to: %s", output_path_clusters)
     all_nodes, cluster_labels = [], []
     cut_edges_nodes, cut_edges_weights, cut_edges_clusters = [], [], []
-    betweenness_dict = {}
+    degree_dict, betweenness_dict, triangles_dict = {}, {}, {}
     fragment_nodes, fragment_labels = [], []
     cluster_stats = {}  # track number of nodes and cumulative node weight for each cluster
     total_bins = 0
@@ -151,9 +169,12 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                 cut_edges_nodes = cut_edges_nodes + cuts
                 cut_edges_clusters = cut_edges_clusters + cuts
                 cut_edges_weights = cut_edges_weights + cuts
-                cluster_stats[total_bins] = get_cc_stats(graph.subgraph(connected_component),
+                cluster_stats[total_bins], cc_degree_dict, cc_betweenness_dict, cc_triangles_dict = get_cc_stats(graph.subgraph(connected_component),
                                                      length_sum, len(connected_component))
-                betweenness_dict.update(nx.betweenness_centrality(graph.subgraph(connected_component)))
+                degree_dict.update(cc_degree_dict)
+                betweenness_dict.update(cc_betweenness_dict)
+                triangles_dict.update(cc_triangles_dict)
+
 
 
         else:  # if cc has more than one cluster
@@ -165,10 +186,11 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                 clusters_dict[label].append(component_nodes)
             for k, cluster_nodes in clusters_dict.items():
                 length_cluster = sum([graph.nodes("size")[node] for node in cluster_nodes])
-                cluster_stats[k] = get_cc_stats(graph.subgraph(cluster_nodes),
+                cluster_stats[k], cc_degree_dict, cc_betweenness_dict, cc_triangles_dict = get_cc_stats(graph.subgraph(cluster_nodes),
                                                          length_cluster, len(cluster_nodes))
-                betweenness_dict.update(nx.betweenness_centrality(graph.subgraph(cluster_nodes)))
-                #nx.approximate_current_flow_betweenness_centrality(graph.subgraph(cluster_nodes))
+                degree_dict.update(cc_degree_dict)
+                betweenness_dict.update(cc_betweenness_dict)
+                triangles_dict.update(cc_triangles_dict)
                 if sequences and not skip_output_fasta:
                     cluster_seqs = [sequences.pop(node) for node in cluster_nodes]
                     SeqIO.write(cluster_seqs, os.path.join(output_path_clusters, "{}.{}".format(k, FASTA_EXT)), "fasta")
@@ -200,8 +222,9 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
     clusters_dataframe["cut edges clusters"] = cut_edges_clusters
     clusters_dataframe = clusters_dataframe.sort_values(['cluster', 'node'])
     clusters_dataframe.set_index("node", inplace=True)
+    clusters_dataframe['degree'] = clusters_dataframe.index.map(degree_dict)
     clusters_dataframe['betweenness'] = clusters_dataframe.index.map(betweenness_dict)
-
+    clusters_dataframe['triangles'] = clusters_dataframe.index.map(triangles_dict)
 
     fragments_dataframe = pd.DataFrame({"node": fragment_nodes,
                                         "cluster": fragment_labels})
@@ -239,6 +262,24 @@ def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
                             .format(CAT_EXEC, bin2class_file, bin2class_names, CAT_TAX),
                             shell=True)
     return bin2class_names
+
+
+def merge_classification_into_clusters_info(df_cluster_info, clusters_class_path):
+    cat_df = pd.read_csv(clusters_class_path, sep='\t')
+    ranks = ["superkingdom", "phylum", "class", "order", "family", "genus", "species"]
+    merge_on = "cluster"
+    cat_df = cat_df.fillna("NaN")
+    cat_df["count"] = 1
+    cat_df["cluster"] = cat_df["# bin"].apply(lambda x: x.split(".")[0]).drop(columns="# bin")
+    for col in ranks:
+        cat_df[col] = cat_df[col].apply(lambda x: x.split(":")[0])
+    agg_dict = {col: lambda x: ', '.join(x) if x.nunique() > 1 else x.iloc[0] for col in cat_df.columns if col != merge_on}
+    agg_dict['count'] = 'sum'  # Add a new aggregation function to count rows
+    cat_df_merged = cat_df.groupby(merge_on).agg(agg_dict).reset_index()
+    for col in ranks:
+        df_cluster_info[col] = cat_df_merged[col]
+    df_cluster_info['count'] = cat_df_merged['count']
+    return df_cluster_info
 
 
 def get_viral_bins(table_viral, df_clusters, bin2class_names_path, group_type):
@@ -295,6 +336,7 @@ def output_crispr_spacer_interactions(dir_fragments, dir_minced_output, dir_spac
     logging.info("Running spacepharer; output to: %s", dir_spacepharer_output)
     fragments_all = os.path.join(dir_fragments, "*.{}".format(FASTA_EXT))
     minced_all = os.path.join(dir_minced_output, "*.{}".format("minced"))
+    curr_dir = os.getcwd()
     os.chdir(dir_spacepharer_output)
 
     subprocess.check_output("{} createsetdb {} fragmentTargetSetDB spacepharer_tmp --threads {}"
@@ -308,7 +350,9 @@ def output_crispr_spacer_interactions(dir_fragments, dir_minced_output, dir_spac
     subprocess.check_output("{} predictmatch querySetDB fragmentTargetSetDB fragmentControlSetDB "
                             "spacepharer_results.tsv spacepharer_tmp --threads {}"
                             .format(spacepharer_exec, threads), shell=True)
-    return None
+    results_path = os.path.join(os.getcwd(), "spacepharer_results.tsv")
+    os.chdir(curr_dir)
+    return results_path
 
 
 
@@ -343,8 +387,8 @@ if __name__ == "__main__":
         '--avg-genome-len', type=int, default=4000000,
         help='average length of genomes in sample [4000000]')
     parser.add_argument(
-        '--min-genome-len', type=int, default=500000,
-        help='min length of genomes in sample [500000]')
+        '--min-genome-len', type=int, default=400000,
+        help='min length of genomes in sample [400000]')
     parser.add_argument(
         '--keep-cluster-fa', action="store_true",
         help='keep temp fasta file for each cluster')
@@ -405,12 +449,18 @@ if __name__ == "__main__":
     # create output directories
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=logging.INFO)
+    if not os.path.isabs(args.output_dir):
+        args.output_dir = os.path.normpath(os.path.join(os.getcwd(), args.output_dir))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     output_clusters_dir = os.path.join(args.output_dir, "clusters")
     output_fragments_dir = os.path.join(output_clusters_dir, "fragments")
     output_minced_dir = os.path.join(args.output_dir, "minced")
     output_spacepharer_dir = os.path.join(args.output_dir, "spacepharer")
+    if os.path.exists(output_spacepharer_dir):
+        shutil.rmtree(output_spacepharer_dir)
+        os.makedirs(output_spacepharer_dir)
+
 
     # cluster graph
     if args.skip_clustering:
@@ -456,6 +506,12 @@ if __name__ == "__main__":
     else:
         CLUSTER_CLASSIFICATIONS, FRAGMENT_CLASSIFICATIONS = None, None
 
+    if CLUSTER_CLASSIFICATIONS and not args.skip_clustering:
+        cluster_info_df = merge_classification_into_clusters_info(cluster_info_df, CLUSTER_CLASSIFICATIONS)
+        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t', index=False)
+
+
+
     # viral analysis
     if args.viral_table:
         viral_df_clusters = get_viral_bins(args.viral_table, graph_clusters_df,
@@ -470,6 +526,8 @@ if __name__ == "__main__":
         if not os.path.exists(output_spacepharer_dir):
             os.makedirs(output_spacepharer_dir)
         output_crispr(output_clusters_dir, output_minced_dir, args.minced_exec, args.threads)
-        output_crispr_spacer_interactions(output_fragments_dir, output_minced_dir,
+        spacepharer_results_path = output_crispr_spacer_interactions(output_fragments_dir, output_minced_dir,
                                           output_spacepharer_dir, args.spacepharer_exec, args.threads)
+        spacepharer_destination_path = os.path.join(args.output_dir, os.path.basename(spacepharer_results_path))
+        os.rename(spacepharer_results_path, spacepharer_destination_path)
 
