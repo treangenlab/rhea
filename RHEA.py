@@ -307,7 +307,7 @@ def get_viral_bins(table_viral, df_clusters, bin2class_names_path, group_type):
 
     logging.info("Placing viral sequences in {}".format(group_type))
     df_viral = pd.read_csv(table_viral, dtype={"node": "int32"}, sep="\t", index_col="node")
-    df_clusters = df_clusters.astype({"node": "int32"}).set_index("node")
+    df_clusters = df_clusters.reset_index().astype({"node": "int32"}).set_index("node")
     df_viral = df_viral.merge(df_clusters, on="node", how="inner").reset_index()
     if bin2class_names_path:
         df_bin2class = pd.read_csv(bin2class_names_path, sep="\t")
@@ -418,7 +418,7 @@ if __name__ == "__main__":
         help='Skip additional fasta output for each cluster')
     parser.add_argument(
         '--viral-table', type=str, default="",
-        help='table of viral edges in graph with classifications')
+        help='table of viral nodes in graph with classifications')
     parser.add_argument(
         '--CRISPR', action="store_true",
         help='perform CRISPR spacer analysis')
@@ -500,7 +500,7 @@ if __name__ == "__main__":
                                                               output_clusters_dir,
                                                               output_fragments_dir,
                                                               args.skip_output_fasta)
-        graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t', index=False)
+        graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t')
         graph_fragments_df.to_csv(os.path.join(args.output_dir, "fragments.tsv"), sep='\t', index=False)
         cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t', index=False)
 
