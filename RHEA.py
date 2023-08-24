@@ -238,9 +238,13 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
                                         "cluster": fragment_labels})
     fragments_dataframe = fragments_dataframe.merge(nodes_df, on="node", how="left")
     cluster_info_df = pd.DataFrame(cluster_stats.values(), index=cluster_stats.keys())
+    cluster_info_df = cluster_info_df.rename_axis("cluster").sort_index()
+    cluster_info_df['max depth'] = clusters_dataframe[['cluster', 'node_depth']].groupby('cluster').max()
+    cluster_info_df['mean depth'] = clusters_dataframe[['cluster', 'node_depth']].groupby('cluster').mean()
+    cluster_info_df['median depth'] = clusters_dataframe[['cluster', 'node_depth']].groupby('cluster').median()
     return clusters_dataframe, \
            fragments_dataframe.sort_values(['cluster', 'node']), \
-           cluster_info_df.reset_index().rename(columns={'index': 'cluster'}).sort_values('cluster')
+           cluster_info_df.reset_index()
 
 
 def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
@@ -278,17 +282,17 @@ def merge_classification_into_clusters_info(df_cluster_info, clusters_class_path
     merge_on = "cluster"
     cat_df = cat_df.fillna("NaN")
     cat_df["count"] = 1
-    cat_df["cluster"] = cat_df["# bin"].apply(lambda x: x.split(".")[0]).drop(columns="# bin")
+    cat_df["cluster"] = cat_df["# bin"].apply(lambda x: int(x.split(".")[0])).drop(columns="# bin")
     for col in ranks:
         cat_df[col] = cat_df[col].apply(lambda x: x.split(":")[0])
     agg_dict = {col: lambda x: ', '.join(x) if x.nunique() > 1 else x.iloc[0] for col in cat_df.columns if col != merge_on}
     agg_dict['count'] = 'sum'  # Add a new aggregation function to count rows
-    cat_df_merged = cat_df.groupby(merge_on).agg(agg_dict).reset_index()
+    cat_df_merged = cat_df.groupby(merge_on).agg(agg_dict)
+    df_cluster_info = df_cluster_info.set_index(merge_on)
     for col in ranks:
         df_cluster_info[col] = cat_df_merged[col]
     df_cluster_info['count'] = cat_df_merged['count']
     return df_cluster_info
-
 
 def get_viral_bins(table_viral, df_clusters, bin2class_names_path, group_type):
     """
@@ -516,7 +520,7 @@ if __name__ == "__main__":
 
     if CLUSTER_CLASSIFICATIONS and not args.skip_clustering:
         cluster_info_df = merge_classification_into_clusters_info(cluster_info_df, CLUSTER_CLASSIFICATIONS)
-        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t', index=False)
+        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t')
 
 
 
@@ -538,4 +542,3 @@ if __name__ == "__main__":
                                           output_spacepharer_dir, args.spacepharer_exec, args.threads)
         spacepharer_destination_path = os.path.join(args.output_dir, os.path.basename(spacepharer_results_path))
         os.rename(spacepharer_results_path, spacepharer_destination_path)
-
