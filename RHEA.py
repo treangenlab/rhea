@@ -73,6 +73,53 @@ def weight_graph(graph_path):
     nodes_df = pd.DataFrame(nodes_data, columns=['node', 'node_length', 'node_depth'])
     return graph, sequences, nodes_df
 
+
+def weight_graph_megahit(graph_path):
+    logging.info("Reading in graph: %s", graph_path)
+    graph = nx.Graph()
+    sequences = {}
+    nodes_data = []
+    with open(graph_path, "r", encoding='UTF-8') as file:
+        while True:
+            header = file.readline().rstrip(";\n")
+            if not header:
+                break
+            header_split = header.split(":")
+            seq = file.readline().strip()
+            header_rev_split = file.readline().rstrip(";\n").split(":")
+            file.readline()
+            # add new node
+            new_node = header_split[0].split("_")[1]
+            node_length = len(seq)
+            node_depth = float(header.split("_cov_")[1].split("_")[0])
+            graph.add_node(new_node, size=node_length, weight=node_depth)
+            sequences[new_node] = SeqRecord(Seq(seq),
+                                            id=new_node,
+                                            description="edge_{}".format(new_node))
+            nodes_data.append([new_node, node_length, node_depth])
+            # add edges
+            new_edges=[]
+            if len(header_split) > 1:
+                new_edges = new_edges + header_split[1].split(",")
+            if len(header_rev_split) > 1:
+                new_edges = new_edges + header_rev_split[1].split(",")
+            for node_b_full in new_edges:
+                node_b_split = node_b_full.split("_")
+                node_b = node_b_split[1]
+                if node_b > new_node:
+                    node_b_depth = float(node_b_split[5])
+                weight = min(node_depth, node_b_depth)
+
+                if not graph.has_edge(new_node, node_b):
+                    graph.add_edge(new_node, node_b, weight=weight)
+
+                else:
+                    weight = graph[new_node][node_b]["weight"] + weight
+                    graph.add_edge(new_node, node_b, weight=weight)
+    nodes_df = pd.DataFrame(nodes_data, columns=['node', 'node_length', 'node_depth'])
+    return graph, sequences, nodes_df
+
+
 def get_cc_stats(graph_cc, sum_length, n_nodes):
 
     """
@@ -156,8 +203,10 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
     for connected_component in nx.connected_components(graph):
         adj_matrix = nx.to_numpy_array(graph, nodelist=list(connected_component))
         length_sum = sum([int(graph.nodes("size")[node]) for node in connected_component])
-        n_clusters = math.ceil(length_sum / genome_avg_len)
-        if n_clusters == 1 or len(connected_component) < 3:  # connected component is one cluster or fragment
+        #n_clusters = math.ceil(length_sum / genome_avg_len)
+        n_clusters = math.ceil(length_sum / genome_min_len)
+        n_clusters = min(n_clusters, len(connected_component)-1)
+        if n_clusters == 1 or len(connected_component) < 3: # connected component is one cluster or fragment
             next_labels = [total_bins] * len(connected_component)
             if sequences:
                 cluster_seqs = [sequences.pop(node) for node in connected_component]
@@ -233,6 +282,7 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
     clusters_dataframe['degree'] = clusters_dataframe.index.map(degree_dict)
     clusters_dataframe['betweenness'] = clusters_dataframe.index.map(betweenness_dict)
     clusters_dataframe['triangles'] = clusters_dataframe.index.map(triangles_dict)
+    clusters_dataframe['weight'] = clusters_dataframe['node_length'] * clusters_dataframe['node_depth']
 
     fragments_dataframe = pd.DataFrame({"node": fragment_nodes,
                                         "cluster": fragment_labels})
@@ -242,6 +292,8 @@ def cluster_graph(graph, sequences, genome_avg_len, genome_min_len,
     cluster_info_df['max depth'] = clusters_dataframe[['cluster', 'node_depth']].groupby('cluster').max()
     cluster_info_df['mean depth'] = clusters_dataframe[['cluster', 'node_depth']].groupby('cluster').mean()
     cluster_info_df['median depth'] = clusters_dataframe[['cluster', 'node_depth']].groupby('cluster').median()
+    temp_df = clusters_dataframe[['cluster', 'weight', 'node_length']].groupby('cluster').sum()
+    cluster_info_df['weighted depth'] = temp_df['weight'] / temp_df['node_length']
     return clusters_dataframe, \
            fragments_dataframe.sort_values(['cluster', 'node']), \
            cluster_info_df.reset_index()
@@ -278,21 +330,32 @@ def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
 
 def merge_classification_into_clusters_info(df_cluster_info, clusters_class_path):
     cat_df = pd.read_csv(clusters_class_path, sep='\t')
-    ranks = ["superkingdom", "phylum", "class", "order", "family", "genus", "species"]
     merge_on = "cluster"
     cat_df = cat_df.fillna("NaN")
-    cat_df["count"] = 1
     cat_df["cluster"] = cat_df["# bin"].apply(lambda x: int(x.split(".")[0])).drop(columns="# bin")
-    for col in ranks:
+    cat_df = cat_df[['cluster'] + TAX_RANKS]
+    for col in TAX_RANKS:
         cat_df[col] = cat_df[col].apply(lambda x: x.split(":")[0])
+    cat_df_merged = cat_df.merge(df_cluster_info, on='cluster', how='outer')
+
+    # summed output for each taxonomic rank
+    for rank in TAX_RANKS:
+        drop_cols = TAX_RANKS[(TAX_RANKS.index(rank) + 1):] + ['cluster']
+        merge_cols = TAX_RANKS[:(TAX_RANKS.index(rank)+1)]
+        df_rank = cat_df_merged.drop(columns=drop_cols).groupby(merge_cols).sum()
+        df_rank.to_csv(os.path.join(args.output_dir, "clusters_info-{}.tsv".format(rank)), sep='\t')
+
+    # output as a single merged file
+    cat_df["count"] = 1
     agg_dict = {col: lambda x: ', '.join(x) if x.nunique() > 1 else x.iloc[0] for col in cat_df.columns if col != merge_on}
     agg_dict['count'] = 'sum'  # Add a new aggregation function to count rows
     cat_df_merged = cat_df.groupby(merge_on).agg(agg_dict)
     df_cluster_info = df_cluster_info.set_index(merge_on)
-    for col in ranks:
+    for col in TAX_RANKS:
         df_cluster_info[col] = cat_df_merged[col]
     df_cluster_info['count'] = cat_df_merged['count']
     return df_cluster_info
+
 
 def get_viral_bins(table_viral, df_clusters, bin2class_names_path, group_type):
     """
@@ -375,19 +438,22 @@ if __name__ == "__main__":
         "input_graph", type=str,
         help="path to .gfa assembly graph")
     parser.add_argument(
-        "--cat_pack", type=str, default=os.environ.get("CAT_PACK"),
+        '--type', '-x', choices=['metaflye', 'megahit', 'graphml'], default='metaflye',
+        help='specify assembly graph construction method [metaflye]')
+    parser.add_argument(
+        "--cat-pack", type=str, default=os.environ.get("CAT_PACK"),
         help="path to CAT_pack install")
     parser.add_argument(
-        "--cat_db", type=str, default=os.environ.get("CAT_DB_DIR"),
+        "--cat-db", type=str, default=os.environ.get("CAT_DB_DIR"),
         help="path to CAT database")
     parser.add_argument(
-        "--cat_db_tax", type=str, default=os.environ.get("CAT_DB_TAX_DIR"),
+        "--cat-db-tax", type=str, default=os.environ.get("CAT_DB_TAX_DIR"),
         help="path to CAT taxonomy database")
     parser.add_argument(
-        "--diamond_exec", type=str, default=os.environ.get("DIAMOND_EXEC"),
+        "--diamond-exec", type=str, default=os.environ.get("DIAMOND_EXEC"),
         help="path to DIAMOND executable")
     parser.add_argument(
-        "--minced_exec", type=str, default="minced",
+        "--minced-exec", type=str, default="minced",
         help="path to MinCED exectuable")
     parser.add_argument(
         "--spacepharer_exec", type=str, default="spacepharer",
@@ -486,11 +552,12 @@ if __name__ == "__main__":
         if not os.path.exists(output_fragments_dir):
             os.makedirs(output_fragments_dir)
         # create and cluster RHEA graph
-        if os.path.splitext(args.input_graph)[1] == '.graphml':
+        if args.type == "graphml":
             seqs = None
             df_nodes = pd.DataFrame([], columns=['node'])
             weighted_graph = nx.read_graphml(args.input_graph)
-
+        elif args.type == "megahit":
+            weighted_graph, seqs, df_nodes = weight_graph_megahit(args.input_graph)
         else:
             weighted_graph, seqs, df_nodes = weight_graph(args.input_graph)
         graph_clusters_df, graph_fragments_df, cluster_info_df = cluster_graph(weighted_graph, seqs,
@@ -500,6 +567,7 @@ if __name__ == "__main__":
                                                               output_clusters_dir,
                                                               output_fragments_dir,
                                                               args.skip_output_fasta)
+        graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t')
         graph_clusters_df.to_csv(os.path.join(args.output_dir, "clusters.tsv"), sep='\t')
         graph_fragments_df.to_csv(os.path.join(args.output_dir, "fragments.tsv"), sep='\t', index=False)
         cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t', index=False)
@@ -518,9 +586,6 @@ if __name__ == "__main__":
     else:
         CLUSTER_CLASSIFICATIONS, FRAGMENT_CLASSIFICATIONS = None, None
 
-    if CLUSTER_CLASSIFICATIONS and not args.skip_clustering:
-        cluster_info_df = merge_classification_into_clusters_info(cluster_info_df, CLUSTER_CLASSIFICATIONS)
-        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t')
 
 
 
@@ -542,3 +607,8 @@ if __name__ == "__main__":
                                           output_spacepharer_dir, args.spacepharer_exec, args.threads)
         spacepharer_destination_path = os.path.join(args.output_dir, os.path.basename(spacepharer_results_path))
         os.rename(spacepharer_results_path, spacepharer_destination_path)
+
+    # output cluster_info for respective ranks
+    if CLUSTER_CLASSIFICATIONS and not args.skip_clustering:
+        cluster_info_df = merge_classification_into_clusters_info(cluster_info_df, CLUSTER_CLASSIFICATIONS)
+        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t')
