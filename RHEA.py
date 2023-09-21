@@ -108,14 +108,12 @@ def weight_graph_megahit(graph_path):
                 node_b = node_b_split[1]
                 if node_b > new_node:
                     node_b_depth = float(node_b_split[5])
-                weight = min(node_depth, node_b_depth)
-
-                if not graph.has_edge(new_node, node_b):
-                    graph.add_edge(new_node, node_b, weight=weight)
-
-                else:
-                    weight = graph[new_node][node_b]["weight"] + weight
-                    graph.add_edge(new_node, node_b, weight=weight)
+                    weight = min(node_depth, node_b_depth)
+                    if not graph.has_edge(new_node, node_b):
+                        graph.add_edge(new_node, node_b, weight=weight)
+                    else:
+                        weight = graph[new_node][node_b]["weight"] + weight
+                        graph.add_edge(new_node, node_b, weight=weight)
     nodes_df = pd.DataFrame(nodes_data, columns=['node', 'node_length', 'node_depth'])
     return graph, sequences, nodes_df
 
@@ -328,7 +326,7 @@ def classify_clusters(out_dir, clusters_dir, group_type, n_threads):
     return bin2class_names
 
 
-def merge_classification_into_clusters_info(df_cluster_info, clusters_class_path):
+def merge_classification_into_clusters_info(df_cluster_info, clusters_class_path, out_dir):
     cat_df = pd.read_csv(clusters_class_path, sep='\t')
     merge_on = "cluster"
     cat_df = cat_df.fillna("NaN")
@@ -340,10 +338,16 @@ def merge_classification_into_clusters_info(df_cluster_info, clusters_class_path
 
     # summed output for each taxonomic rank
     for rank in TAX_RANKS:
-        drop_cols = TAX_RANKS[(TAX_RANKS.index(rank) + 1):] + ['cluster']
+        drop_cols = TAX_RANKS[(TAX_RANKS.index(rank) + 1):] + ['mean node length', 'median node length',
+                                                               'mean edge weight', 'median edge weight', 'density',
+                                                               'mean degree', 'highest degree',
+                                                               'clustering coefficient', 'mean betweenness',
+                                                               'max depth', 'mean depth', 'median depth', 'n cycles l3']
+        merge_cols = TAX_RANKS[:(TAX_RANKS.index(rank)+1)] + ['cluster']
+        df_rank = cat_df_merged.drop(columns=drop_cols).groupby(merge_cols).first().reset_index().drop(columns='cluster')
         merge_cols = TAX_RANKS[:(TAX_RANKS.index(rank)+1)]
-        df_rank = cat_df_merged.drop(columns=drop_cols).groupby(merge_cols).sum()
-        df_rank.to_csv(os.path.join(args.output_dir, "clusters_info-{}.tsv".format(rank)), sep='\t')
+        df_rank = df_rank.groupby(merge_cols).sum()
+        df_rank.to_csv(os.path.join(out_dir, "clusters_info-{}.tsv".format(rank)), sep='\t')
 
     # output as a single merged file
     cat_df["count"] = 1
@@ -468,9 +472,6 @@ if __name__ == "__main__":
         '--min-genome-len', type=int, default=400000,
         help='min length of genomes in sample [400000]')
     parser.add_argument(
-        '--keep-cluster-fa', action="store_true",
-        help='keep temp fasta file for each cluster')
-    parser.add_argument(
         '--input-classifications', nargs=2, metavar=('clusters_class', 'fragments_class'),
         help='input classifications if skipping CAT classification step')
     parser.add_argument(
@@ -586,8 +587,11 @@ if __name__ == "__main__":
     else:
         CLUSTER_CLASSIFICATIONS, FRAGMENT_CLASSIFICATIONS = None, None
 
-
-
+    # output cluster_info for respective ranks
+    if CLUSTER_CLASSIFICATIONS and not args.skip_clustering:
+        cluster_info_df = merge_classification_into_clusters_info(cluster_info_df, CLUSTER_CLASSIFICATIONS,
+                                                                  args.output_dir)
+        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t')
 
     # viral analysis
     if args.viral_table:
@@ -597,6 +601,7 @@ if __name__ == "__main__":
         viral_df_fragments = get_viral_bins(args.viral_table, graph_fragments_df,
                                             FRAGMENT_CLASSIFICATIONS, "fragment")
         viral_df_fragments.to_csv(os.path.join(args.output_dir, "fragments-with-viral.tsv"), sep='\t', index=False)
+
     if args.CRISPR:
         if not os.path.exists(output_minced_dir):
             os.makedirs(output_minced_dir)
@@ -608,7 +613,3 @@ if __name__ == "__main__":
         spacepharer_destination_path = os.path.join(args.output_dir, os.path.basename(spacepharer_results_path))
         os.rename(spacepharer_results_path, spacepharer_destination_path)
 
-    # output cluster_info for respective ranks
-    if CLUSTER_CLASSIFICATIONS and not args.skip_clustering:
-        cluster_info_df = merge_classification_into_clusters_info(cluster_info_df, CLUSTER_CLASSIFICATIONS)
-        cluster_info_df.to_csv(os.path.join(args.output_dir, "clusters_info.tsv"), sep='\t')
