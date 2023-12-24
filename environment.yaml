@@ -1,4 +1,4 @@
-name: custom-SCOA
+name: custom-rhea
 
 channels:
 - bioconda
@@ -10,6 +10,5 @@ dependencies:
 - pandas
 - networkx
 - scikit-learn
-- prodigal
-- diamond
-- cat
+- flye
+- minigraph
