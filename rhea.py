@@ -9,6 +9,7 @@ import os
 import logging
 import argparse
 import subprocess
+import pandas as pd
 
 __author__ = 'Kristen Curry'
 __version__ = '1.0.0'
@@ -19,8 +20,7 @@ PAF_headers = ['query', 'query length', 'query start', 'query end', 'relative', 
                'quality', 'tp', 'cm', 's1', 's2', 'dv']
 
 
-
-def weight_graph():
+def count_bps(sequence_file):
     """
     Parses .gfa file from MetaFlye output into a networkx graph. Nodes are weighted by length of
     sequence. edges are weighted by coverage.
@@ -28,7 +28,22 @@ def weight_graph():
     :str graph_path: path to .gfa MetaFlye output
     :return: Weighted Networkx graph (G), dictionary of edge id to SeqRecord sequence (sequences)
     """
-    return None
+    base_file_ext = os.path.splitext(sequence_file.split(".gz")[0])[1]
+    regex_command = '/^>/ {{next}}' if base_file_ext[-1] == "a" else 'NR%4==2'
+    print_command = 'gzcat' if sequence_file.endswith('.gz') else 'cat'
+    try:
+        with subprocess.Popen([print_command, sequence_file], stdout=subprocess.PIPE) \
+                as zcat_process:
+            with subprocess.Popen(['awk', '{} {{bp += length($0)}} END {{print bp}}'
+                    .format(regex_command)],
+                              stdin=zcat_process.stdout, stdout=subprocess.PIPE, text=True) \
+                    as awk_process:
+                zcat_process.stdout.close()  # Close the unused end of the pipe
+                process_output, _ = awk_process.communicate()
+                return int(process_output.strip())
+    except subprocess.CalledProcessError:
+        print("Unable to gather bp count from input reads. No weights will be applied.")
+        return 1
 
 
 if __name__ == "__main__":
@@ -38,8 +53,11 @@ if __name__ == "__main__":
         "input", type=str, nargs='+',
         help="path to metagenome sequences files to compare, in order")
     parser.add_argument(
-        "--input_graph", type=str,
+        "--input-graph", type=str,
         help="path to .gfa assembly graph by MetaFlye")
+    parser.add_argument(
+        "--bp-table", type=str,
+        help="path to .tsv with bps for each input read")
     parser.add_argument(
         '--type', '-x', choices=['pacbio-raw', 'pacbio-corr', 'pacbio-hifi',
                                  'nano-raw', 'nano-corr', 'nano-hq'],
@@ -60,22 +78,18 @@ if __name__ == "__main__":
 
     # check Flye is installed if graph is not provided
     if not args.input_graph: # check in input is sequences or alignments
-        try: # check flye is installed
-            output = subprocess.check_output("{} --version".format(args.flye_exec), shell=True)
-        except subprocess.CalledProcessError as e:
-            print("Error: Flye not installed or linked: ", e)
+        output = subprocess.check_output("{} --version".format(args.flye_exec), shell=True)
     file_extension = os.path.splitext(args.input[0])[1]
 
     # check minigraph is installed if alignments are not provided
     alignments = []
     if file_extension != ".gaf": # input is sequences, not alignment
-        try: # check minigraph is installed
-            output = subprocess.check_output("{} --version".format(args.minigraph_exec), shell=True)
-        except subprocess.CalledProcessError as e:
-            print("Error: Minigraph not installed or linked: ", e)
+        output = subprocess.check_output("{} --version".format(args.minigraph_exec), shell=True)
     else:
         if not args.input_graph: # if alignments are provided, graph must be as well
             raise ValueError("Assembly graph for provided alignments must also be provided.")
+        if not args.bp_table: # if alignments are provided, bp_table must be as well
+            raise ValueError("Number of bps per sequence must be provided for each alignment.")
         alignments = args.input
 
     # create output directories
@@ -97,15 +111,23 @@ if __name__ == "__main__":
         logging.info("Metaflye output complete: %s", flye_output)
 
     # Minigraph - align sequences to assembly graph
+    reads_bps = []
     if file_extension != ".gaf": # input is sequences, not alignment
         for input_seq in args.input:
             file_stem = os.path.splitext(os.path.basename(input_seq))[0]
+            if file_extension == ".gz":
+                file_stem = os.path.splitext(file_stem)[0]
             alignment_output = os.path.join(args.output_dir, "".join([file_stem, ".gaf"]))
             subprocess.check_output("{} -t{} {} {} > {}"
                                     .format(args.minigraph_exec, args.threads, args.input_graph,
                                             input_seq, alignment_output), shell=True)
             alignments.append(alignment_output)
+            reads_bps.append((file_stem, count_bps(input_seq)))
         logging.info("Minigraph alignments complete: %s", args.output_dir)
+    # report number of bp per input data set
+    reads_bp_df = pd.DataFrame(data=reads_bps)
+    reads_bp_out_path = os.path.join(args.output_dir, "bp_counts.tsv")
+    reads_bp_df.to_csv(reads_bp_out_path, sep='\t', header=False, index=False)
 
     # Rhea - evaluate variations in graph alignment coverage
     print(alignments)
