@@ -11,7 +11,9 @@ import argparse
 import subprocess
 import numpy as np
 import pandas as pd
+import networkx as nx
 import seaborn as sns
+
 
 
 __author__ = 'Kristen Curry'
@@ -51,24 +53,99 @@ def count_bps(sequence_file):
         return 1
 
 
-def create_nodes_df(graph_path):
+def read_graph(graph_path):
     """
-    Create a df of all graph nodes and their length in bps
+    Read in .gfa Metaflye graph to a networkx graph and
+        create a df of all graph nodes and their length in bps
 
     :str graph_path: path to graph.gfa file
     :return: (df) of graph nodes with their length in bps
     """
+
+    logging.info("Reading in graph: %s", graph_path)
+    graph = nx.Graph()
     entries = []
     with open(graph_path, "r", encoding='UTF-8') as file:
         for line in file:
-            if line.startswith("S"):
+            if line.startswith("S"): # add a node
                 split_line = line[:-1].split("\t")
                 new_node = split_line[1]
                 new_node_id = split_line[1].split("_")[-1]
                 node_length = len(split_line[2])
                 entries.append((new_node, new_node_id, node_length))
-    return pd.DataFrame(entries, columns=NODE_DF_HEADERS)
+            if line.startswith("L"): # add an edge
+                split_line = line.rstrip("\n").split("\t")
+                node_a = split_line[1].split("_")[-1]
+                node_b = split_line[3].split("_")[-1]
+                if not graph.has_edge(node_a, node_b):
+                    graph.add_edge(node_a, node_b)
+    return graph, pd.DataFrame(entries, columns=NODE_DF_HEADERS)
 
+def add_node_coverage_to_graph(graph, df_nodes_coverage):
+    """
+
+    :param graph:
+    :param df_nodes_coverage:
+    :return:
+    """
+    percent_change_columns = ['node_id'] + \
+                             [col for col in df_nodes_coverage.columns if re.match(r'change_percent_\d+$', col)]
+    df_nodes_percent_change = df_nodes_coverage[percent_change_columns].set_index("node_id")
+    for node in graph.nodes():
+        if node in df_nodes_percent_change.index:
+            percent_change_vector = [float(value) for value in df_nodes_percent_change.loc[node].tolist()]
+            graph.nodes[node]['percent_change_vector'] = percent_change_vector
+        else:
+            graph.nodes[node]['percent_change_vector'] = [0] * df_nodes_percent_change.shape[1]
+    return graph
+
+def label_indel(vectors):
+    num_vectors = len(vectors)
+    vector_length = len(vectors[0])
+    # Combine the vectors into a single 2D array
+    combined = np.vstack(vectors)
+    # Calculate mean and standard deviation across the three vectors for each index
+    median = np.median(combined, axis=0)
+    std_dev = np.std(combined, axis=0)
+    # Define a threshold for outliers (e.g., values more than 3 standard deviations away from the mean)
+    threshold = 1  # Adjust as needed based on your data and requirements
+    # Identify outliers for each index across the vectors
+    outliers = np.abs(combined - median) > threshold * std_dev
+    # Get indices of outliers
+    outlier_indices = np.where(np.sum(outliers, axis=0) == 1)[0]
+    outlier_vectors = {index: np.where(outliers[:, index])[0][0] for index in outlier_indices}
+    return outlier_vectors
+
+
+def detect_structual_variants(graph, df_nodes):
+    """
+
+    :param graph:
+    :param df_nodes:
+    :return:
+    """
+    df_SVs = df_nodes.copy()
+    datas = [[]] * N_TIMESTEPS
+    cliques = list(nx.enumerate_all_cliques(graph))
+    for clique in cliques:
+        if len(clique) == 3: # detect indels
+            vectors = [graph.nodes[node]['percent_change_vector'] for node in clique]
+            outlier_vectors = label_indel(vectors)
+            for timestep, outlier_index in outlier_vectors.items():
+                SV_type = 'deletion' if vectors[outlier_index] == min(vectors) else 'insertion'
+                neighbors = clique.copy()
+                neighbors.pop(outlier_index)
+                datas[timestep].append([clique[outlier_index], SV_type, neighbors[0], neighbors[1], ""])
+
+    # add SVs for each timestep into nodes_df
+    columns_names = ['SV_type', 'neighbor1', 'neighbor2', 'replacement']
+    counter = 1
+    for data in datas:
+        column_names_timestep = ['node_id'] + ["t{}-{}".format(counter, value) for value in columns_names]
+        additional_df = pd.DataFrame(data=data, columns=column_names_timestep)
+        df_SVs = pd.merge(df_SVs, additional_df, on='node_id', how='outer')
+        counter = counter + 1
+    return df_SVs
 
 def process_row_coverage(row):
     """
@@ -387,15 +464,24 @@ if __name__ == "__main__":
 
 
     # Rhea - evaluate variations in graph alignment coverage
-    nodes_df = create_nodes_df(args.input_graph)
+    networkx_graph, nodes_df = read_graph(args.input_graph)
     NODE_LENGTH_DICT = dict(zip(nodes_df['node'], nodes_df['node_length']))
     SEQ_BP_DICT = dict(zip(reads_bp_df[0], reads_bp_df[1]))
+    N_TIMESTEPS = len(args.input) - 1
     nodes_df_coverage, nodes_df_coverage_norm = \
         create_both_nodes_coverage_dfs(alignments, nodes_df)
 
+    #nodes_df_coverage = pd.read_csv("/Users/kcurry/hotspring-metagenomic/RHEA/m0_rhea/node_coverage.csv", dtype=str)
+    #nodes_df_coverage_norm = pd.read_csv("/Users/kcurry/hotspring-metagenomic/RHEA/m0_rhea/node_coverage_norm.csv", dtype=str)
+
+    networkx_graph = add_node_coverage_to_graph(networkx_graph, nodes_df_coverage)
+    variants_df = detect_structual_variants(networkx_graph, nodes_df)
+
     # export coverage dataframes
+    variants_df_outpath = os.path.join(args.output_dir, "structual_variants.tsv")
     coverage_df_outpath = os.path.join(args.output_dir, "node_coverage.csv")
     coverage_df_norm_outpath = os.path.join(args.output_dir, "node_coverage_norm.csv")
+    variants_df.to_csv(variants_df_outpath, index=False, sep='\t')
     nodes_df_coverage.to_csv(coverage_df_outpath, index=False)
     nodes_df_coverage_norm.to_csv(coverage_df_norm_outpath, index=False)
 
