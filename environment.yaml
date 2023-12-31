@@ -7,8 +7,9 @@ channels:
 dependencies:
 - biopython
 - python
+- numpy
 - pandas
-- networkx
-- scikit-learn
+- networkx>=2.6
+- seaborn
 - flye
 - minigraph

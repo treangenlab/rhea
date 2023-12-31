@@ -4,18 +4,18 @@
 """
 @author: kcurry
 """
-import re
 import os
+import re
+import csv
 import logging
 import argparse
 import subprocess
+from functools import reduce
+
 import numpy as np
 import pandas as pd
 import networkx as nx
 import seaborn as sns
-from functools import reduce
-
-
 
 
 __author__ = 'Kristen Curry'
@@ -29,7 +29,20 @@ PAF_HEADERS = ['query', 'query length', 'query start', 'query end', 'relative', 
 SV_COLUMN_NAMES = ['SV_type', 'neighbor1', 'neighbor2', 'replacement']
 NODE_LENGTH_DICT = {}
 SEQ_BP_DICT = {}
-EDGE_FOLD_CHANGE_THRESHOLD = 1
+
+def convert_edge_dict(in_path):
+    """
+    TODO
+    :param in_path:
+    :return:
+    """
+    dict_of_dicts = {}
+    # Read the TSV file and convert it into a dictionary of dictionaries
+    with open(in_path, 'r', encoding='utf-8') as tsvfile:
+        tsvreader = csv.DictReader(tsvfile, delimiter='\t')
+        for row in tsvreader:
+            dict_of_dicts[row['header1']] = {k: v for k, v in row.items() if k != 'header1'}
+    return dict_of_dicts
 
 
 def count_bps(sequence_file):
@@ -56,7 +69,6 @@ def count_bps(sequence_file):
         print("Unable to gather bp count from input reads. No weights will be applied.")
         return 1
 
-
 def read_graph(graph_path):
     """
     Read in .gfa Metaflye graph to a networkx graph and
@@ -82,7 +94,10 @@ def read_graph(graph_path):
                 node_a = split_line[1].split("_")[-1]
                 node_b = split_line[3].split("_")[-1]
                 if not graph.has_edge(node_a, node_b):
-                    graph.add_edge(node_a, node_b)
+                    graph.add_edge(node_a, node_b, count=1)
+                else:
+                    curr_count = graph[node_a][node_b]["count"]
+                    graph.add_edge(node_a, node_b, count=curr_count+1)
     return graph, pd.DataFrame(entries, columns=NODE_DF_HEADERS)
 
 def add_node_coverage_to_graph(graph, df_nodes_coverage):
@@ -92,36 +107,37 @@ def add_node_coverage_to_graph(graph, df_nodes_coverage):
     :param df_nodes_coverage:
     :return:
     """
-    percent_change_columns = ['node_id'] + \
+    log_fold_change_columns = ['node_id'] + \
                              [col for col in df_nodes_coverage.columns
-                              if re.match(r'change_percent_\d+$', col)]
-    df_nodes_percent_change = df_nodes_coverage[percent_change_columns].set_index("node_id")
+                              if re.match(r'log_fold_change_\d+$', col)]
+    df_nodes_log_fold_change = df_nodes_coverage[log_fold_change_columns].set_index("node_id")
     for node in graph.nodes():
-        if node in df_nodes_percent_change.index:
-            percent_change_vector = [float(value) for value
-                                     in df_nodes_percent_change.loc[node].tolist()]
-            graph.nodes[node]['percent_change_vector'] = percent_change_vector
+        if node in df_nodes_log_fold_change.index:
+            log_fold_change_vector = [float(value) for value
+                                     in df_nodes_log_fold_change.loc[node].tolist()]
+            graph.nodes[node]['log_fold_change_vector'] = log_fold_change_vector
         else:
-            graph.nodes[node]['percent_change_vector'] = [0] * df_nodes_percent_change.shape[1]
+            graph.nodes[node]['log_fold_change_vector'] = [0] * df_nodes_log_fold_change.shape[1]
     return graph
 
-def calculate_fold_change_edges_coverage():
+def calculate_log_fold_change_edge_coverage(df_nodes):
     """
 
     :return:
     """
-    fold_changes = []
-    for i in range(1, len(COVERAGE_EDGES_DICTS)):
-        fold_change = {}
-        for row_key in COVERAGE_EDGES_DICTS[i]:
-            fold_change[row_key] = {
-                col_key: (COVERAGE_EDGES_DICTS[i][row_key][col_key] -
-                          COVERAGE_EDGES_DICTS[0][row_key][col_key]) /
-                         COVERAGE_EDGES_DICTS[i-1][row_key][col_key]
-                for col_key in COVERAGE_EDGES_DICTS[i-1][row_key]
-            }
-        fold_changes.append(fold_change)
-    return fold_changes
+    # can speed this up with matricies rather than for loops
+    lfc_list = []
+    for time in range(1, len(COVERAGE_EDGES_DICTS)):
+        lfc_matrix = {row: {col: 1 for col in df_nodes['node_id']}
+                             for row in df_nodes['node_id']}
+        for row_key in COVERAGE_EDGES_DICTS[time]:
+            lfc_matrix[row_key] = {}
+            for col_key in COVERAGE_EDGES_DICTS[time][row_key]:
+                lfc_matrix[row_key][col_key] = np.log2(
+                    COVERAGE_EDGES_DICTS[time][row_key][col_key]
+                    / COVERAGE_EDGES_DICTS[time-1][row_key][col_key])
+        lfc_list.append(lfc_matrix)
+    return lfc_list
 
 
 def label_indel(vectors_stacked, std_thresh=1):
@@ -152,75 +168,79 @@ def label_mutations(cycle, vectors_stacked, datas, std_thresh=1):
     medians = np.median(vectors_stacked, axis=0)
     std_devs = np.std(vectors_stacked, axis=0)
     within_threshold = np.abs(vectors_stacked - medians) < std_thresh * std_devs
-    indices_basis_02 = np.where(np.all(within_threshold[[0, 2]], axis=0) &
-                                np.any(within_threshold[[1, 3]], axis=0))[0]
-    indices_basis_13 = np.where(np.all(within_threshold[[1, 3]], axis=0) &
-                                np.any(within_threshold[[0, 2]], axis=0))[0]
-    for (timestep_significant, mutation_indicies) in ((indices_basis_02, [1, 3]),
-                                                      (indices_basis_13, [0, 2])):
+    mut_13 = np.where(np.all(within_threshold[[0, 2]], axis=0) &
+                                ~np.all(within_threshold[[1, 3]], axis=0))[0]
+    mut_02 = np.where(np.all(within_threshold[[1, 3]], axis=0) &
+                                ~np.all(within_threshold[[0, 2]], axis=0))[0]
+    for (timestep_significant, i_mut) in ((mut_13, 1), (mut_02, 0)):
         for timestep in timestep_significant:
-            for i in mutation_indicies:
-                if not within_threshold[i][timestep]:
-                    mutation_victory = "win"
-                    if vectors_stacked[i][timestep] < medians[timestep]:
-                        mutation_victory = "loss"
-                    mutation = [cycle[i], "mutation {}".format(mutation_victory),
-                                cycle[(i+1)%4], cycle[(i+3)%4], (cycle[(i+2)%4])]
-                    datas[timestep].append(mutation)
+            if vectors_stacked[i_mut][timestep] * \
+                    vectors_stacked[i_mut+2][timestep] < 0: # one increases and the other decreases
+                mut_win, mut_loss = i_mut, i_mut+2
+                if vectors_stacked[i_mut][timestep] < vectors_stacked[i_mut+2][timestep]:
+                    mut_win, mut_loss = i_mut+2, i_mut
+                datas[timestep][cycle[mut_win]].append(
+                    ("mutation win", cycle[mut_loss], cycle[i_mut+1], cycle[(i_mut+3)%4]))
+                datas[timestep][cycle[mut_loss]].append(
+                    ("mutation loss", cycle[mut_win], cycle[i_mut+1], cycle[(i_mut+3)%4]))
     return datas
 
-
-def detect_structual_variants(graph, df_nodes):
+def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh):
     """
 
     :param graph:
     :param df_nodes:
     :return:
     """
-    datas = [[] for _ in range(N_TIMESTEPS)]
-    edge_coverage_fold_change = calculate_fold_change_edges_coverage()
+    datas = [{node:[] for node in df_nodes['node_id']} for _ in range(N_TIMESTEPS)]
+    edge_coverage_fold_change = calculate_log_fold_change_edge_coverage(df_nodes)
     cycles = nx.cycle_basis(graph)
     for cycle in cycles:
         if len(cycle) == 1: # look for tandem duplication/deletion
             for timestep in range(N_TIMESTEPS):
                 if edge_coverage_fold_change[timestep][cycle[0]][cycle[0]] \
-                        > EDGE_FOLD_CHANGE_THRESHOLD:
-                    new_duplication = [cycle[0], 'tandem duplication gain', '', '']
-                    datas[timestep].append(new_duplication)
+                        > edge_lfc_thresh:
+                    datas[timestep][cycle[0]].append(('tandem duplication gain', '', '', ''))
                 elif edge_coverage_fold_change[timestep][cycle[0]][cycle[0]] < \
-                        (EDGE_FOLD_CHANGE_THRESHOLD * -1):
-                    new_duplication = [cycle[0], 'tandem duplication loss', '', '']
-                    datas[timestep].append(new_duplication)
+                        (edge_lfc_thresh * -1):
+                    datas[timestep][cycle[0]].append(('tandem duplication loss', '', '', ''))
         elif len(cycle) == 3: # detect indels
-            vectors = np.vstack([graph.nodes[node]['percent_change_vector'] for node in cycle])
-            outlier_vectors = label_indel(vectors)
+            vectors = np.vstack([graph.nodes[node]['log_fold_change_vector'] for node in cycle])
+            outlier_vectors = label_indel(vectors, node_std_thresh)
             for timestep, outlier_index in outlier_vectors.items():
-                svariant_type = 'deletion' if vectors[outlier_index][timestep] == min(vectors[:, timestep]) else 'insertion'
+                svariant_type = 'deletion' if vectors[outlier_index][timestep] == \
+                                              min(vectors[:, timestep]) else 'insertion'
                 neighbors = cycle.copy()
                 neighbors.pop(outlier_index)
-                if cycle[outlier_index] == '1223':
-                    print(timestep)
-                    print(outlier_index)
-                    print(vectors)
-                    print(cycle)
-                    print(outlier_vectors)
-                    print("hi")
-                new_indel = [cycle[outlier_index], svariant_type, neighbors[0], neighbors[1], ""]
-                datas[timestep].append(new_indel)
+                datas[timestep][cycle[outlier_index]]\
+                    .append((svariant_type, neighbors[0], neighbors[1], ''))
         elif len(cycle) == 4: # detect mutation swaps
-            vectors = np.vstack([graph.nodes[node]['percent_change_vector'] for node in cycle])
-            datas = label_mutations(cycle, vectors, datas)
-
+            vectors = np.vstack([graph.nodes[node]['log_fold_change_vector'] for node in cycle])
+            datas = label_mutations(cycle, vectors, datas, node_std_thresh)
+    for node_a, node_b, edge_count in graph.edges(data='count', default=1):
+        # second possible duplication pattern
+        if edge_count >= 2: #look for tandem duplication
+            for timestep in range(N_TIMESTEPS):
+                if edge_coverage_fold_change[timestep][node_a][node_b] > edge_lfc_thresh:
+                    dup_node = node_a
+                    if graph.nodes[node_b]['log_fold_change_vector'][timestep] \
+                            > graph.nodes[node_a]['log_fold_change_vector'][timestep]:
+                        dup_node = node_b
+                    if not datas[timestep][dup_node]:
+                        datas[timestep][dup_node].append(['tandem duplication gain', '', '', ''])
     # add SVs for each timestep into nodes_df
     counter = 0
     merged_sv_dfs = [df_nodes.copy()]
     for data in datas:
         column_names_timestep = ['node_id'] + \
                                 ["t{}-{}".format(counter, value) for value in SV_COLUMN_NAMES]
-        merged_sv_dfs.append(pd.DataFrame(data=data, columns=column_names_timestep))
+        new_df = pd.DataFrame([(node_id, *tup) for node_id, tuples in data.items()
+                               for tup in tuples], columns=column_names_timestep)
+        merged_sv_dfs.append(new_df)
         counter += 1
-    return reduce(lambda left, right: pd.merge(left, right, on='node_id', how='outer'), merged_sv_dfs)
-
+    df_merged = reduce(lambda left, right: pd.merge(left, right, on='node_id', how='outer'),
+                       merged_sv_dfs)
+    return df_merged
 
 def process_row_coverage(row, timestep):
     """
@@ -239,23 +259,23 @@ def process_row_coverage(row, timestep):
 
     # measure number of bp in each node included in alignment
     else:
-        for i, part in enumerate(target_name_parts):
+        for j, part in enumerate(target_name_parts):
             part_trim = part.split("_")[-1]
             node_length = NODE_LENGTH_DICT[part]
-            if i == 0:
+            if j == 0:
                 node_align_length = node_length - row['target start']
-            elif i == len(target_name_parts) - 1:
+            elif j == len(target_name_parts) - 1:
                 node_align_length = node_length - (row['target length'] - row['target end'])
             else:
                 node_align_length = node_length
             COVERAGE_DICTS[timestep][part_trim] = COVERAGE_DICTS[timestep][part_trim] + \
                                                   node_align_length
-
-            if not i == 0: # add to edge coverage
+            if not j == 0: # add to edge coverage
                 COVERAGE_EDGES_DICTS[timestep][part_trim][prev_part_trim] += 1
                 if part_trim != prev_part_trim:
                     COVERAGE_EDGES_DICTS[timestep][prev_part_trim][part_trim] += 1
             prev_part_trim = part_trim
+
 
 def create_coverage_df(alignments_pafs, df_nodes):
     """
@@ -374,7 +394,6 @@ def add_coverage_diff_colors_to_nodes_df(df_nodes_coverage, diff_coverage_cols,
                                                                       palette="coolwarm")
     return df_nodes_coverage
 
-
 def calculate_diff_to_nodes_df(df_nodes_coverage, coverage_cols):
     """
     Add 2 columns for each consecutive col in coverage_cols: 1 for
@@ -385,23 +404,22 @@ def calculate_diff_to_nodes_df(df_nodes_coverage, coverage_cols):
         of columns containing linear difference, (list) diff_percent_cols of columns
         containing percent difference
     """
-    diff_cols = []
-    diff_percent_cols = []
+    linear_change_cols, log_fold_change_cols = [], []
     # set all coverage below 1 to 1 for calculating difference
     df_coverage_adjusted = pd.DataFrame()
     df_coverage_adjusted[coverage_cols] = \
         df_nodes_coverage[coverage_cols].applymap(lambda x: 1 if x < 1 else x)
     for counter in range(len(coverage_cols)-1):
         pair = (coverage_cols[counter], coverage_cols[counter+1])
-        new_col_diff = f"change_{counter}"
-        df_nodes_coverage[new_col_diff] = df_nodes_coverage[f"{pair[1]}"] \
-                                          - df_nodes_coverage[f"{pair[0]}"]
-        diff_cols.append(new_col_diff)
-        new_col_diff_percent = f"change_percent_{counter}"
-        df_nodes_coverage[new_col_diff_percent] = df_nodes_coverage[new_col_diff] / \
-                                                  df_coverage_adjusted[f"{pair[0]}"]
-        diff_percent_cols.append(new_col_diff_percent)
-    return df_nodes_coverage, diff_cols, diff_percent_cols
+        new_linear_change_col = f"linear_change_{counter}"
+        df_nodes_coverage[new_linear_change_col] = df_coverage_adjusted[f"{pair[1]}"] \
+                                                   - df_coverage_adjusted[f"{pair[0]}"]
+        linear_change_cols.append(new_linear_change_col)
+        new_log_fold_change_col = f"log_fold_change_{counter}"
+        df_nodes_coverage[new_log_fold_change_col] = np.log2(df_coverage_adjusted[pair[1]]
+                                                             / df_coverage_adjusted[pair[0]])
+        log_fold_change_cols.append(new_log_fold_change_col)
+    return df_nodes_coverage, linear_change_cols, log_fold_change_cols
 
 def create_both_nodes_coverage_dfs(alignments_list_ordered, df_nodes):
     """
@@ -447,6 +465,12 @@ if __name__ == "__main__":
                                  'nano-raw', 'nano-corr', 'nano-hq'],
         default='nano-raw', help='specify type for flye [nano-raw]')
     parser.add_argument(
+        "--node-std", type=float, default=1.0,
+        help="number of stds away from the median for log fold change")
+    parser.add_argument(
+        "--edge-lfc-thresh", type=float, default=1.0,
+        help="min value of log fold change for change in edge coverage significance")
+    parser.add_argument(
         "--flye-exec", type=str, default='flye',
         help="path to flye executable")
     parser.add_argument(
@@ -484,6 +508,8 @@ if __name__ == "__main__":
         args.output_dir = os.path.normpath(os.path.join(os.getcwd(), args.output_dir))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
+    #else:
+        #raise ValueError("Output directory already exists: %s", args.output_dir)
     log_outpath = os.path.join(args.output_dir, 'rhea.log')
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=logging.INFO, handlers=[logging.FileHandler(log_outpath),
@@ -539,7 +565,7 @@ if __name__ == "__main__":
             raise AssertionError("{} is not included in supplied bp_table as expected"
                                  .format(in_file_stem))
 
-    # Rhea - evaluate variations in graph alignment coverage
+    # Start Rhea - read in graph & init variables
     networkx_graph, nodes_df = read_graph(args.input_graph)
     NODE_LENGTH_DICT = dict(zip(nodes_df['node'], nodes_df['node_length']))
     N_INPUTS = len(args.input)
@@ -547,27 +573,32 @@ if __name__ == "__main__":
     COVERAGE_EDGES_DICTS = [{row: {col: 1 for col in nodes_df['node_id']}
                              for row in nodes_df['node_id']} for _ in range(N_INPUTS)]
     N_TIMESTEPS = N_INPUTS - 1
-    #nodes_df_coverage, nodes_df_coverage_norm = \
-    #    create_both_nodes_coverage_dfs(alignments, nodes_df)
 
-    #nodes_df_coverage = pd.read_csv("/Users/kcurry/hotspring-metagenomic/RHEA/cheeseC/node_coverage.csv", dtype=str)
-    #nodes_df_coverage_norm = pd.read_csv("/Users/kcurry/hotspring-metagenomic/RHEA/cheeseC/node_coverage_norm.csv", dtype=str)
-    nodes_df_coverage = pd.read_csv("/Users/kcurry/hotspring-metagenomic/RHEA/cheese_test_dup/node_coverage.csv", dtype=str)
-    nodes_df_coverage_norm = pd.read_csv("/Users/kcurry/hotspring-metagenomic/RHEA/cheese_test_dup/node_coverage_norm.csv", dtype=str)
+    # calculate edge coverage and log fold change
+    nodes_df_coverage, nodes_df_coverage_norm = \
+        create_both_nodes_coverage_dfs(alignments, nodes_df)
 
+    # output edge_coverage
+    for i, in_file in enumerate(alignments):
+        file_stem = os.path.splitext(os.path.basename(in_file))[0]
+        df_edge_coverage = pd.DataFrame.from_dict(COVERAGE_EDGES_DICTS[i], orient='index')
+        df_edge_coverage_outpath = os.path.join(args.output_dir,
+                                                "edge_coverage-{}.tsv".format(file_stem))
+        df_edge_coverage.to_csv(df_edge_coverage_outpath, sep='\t')
+
+    # output node coverage
     coverage_df_outpath = os.path.join(args.output_dir, "node_coverage.csv")
     coverage_df_norm_outpath = os.path.join(args.output_dir, "node_coverage_norm.csv")
     nodes_df_coverage.to_csv(coverage_df_outpath, index=False)
     nodes_df_coverage_norm.to_csv(coverage_df_norm_outpath, index=False)
 
+    # detect structural variants
     if args.raw_diff:
         networkx_graph = add_node_coverage_to_graph(networkx_graph, nodes_df_coverage)
     else:
         networkx_graph = add_node_coverage_to_graph(networkx_graph, nodes_df_coverage_norm)
-    variants_df = detect_structual_variants(networkx_graph, nodes_df)
-
-    # export coverage dataframes
+    variants_df = detect_structual_variants(networkx_graph, nodes_df,
+                                            args.node_std, args.edge_lfc_thresh)
     variants_df_outpath = os.path.join(args.output_dir, "structual_variants.tsv")
     variants_df.to_csv(variants_df_outpath, index=False, sep='\t')
-
     logging.info("Rhea complete: %s", args.output_dir)
