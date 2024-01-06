@@ -32,9 +32,11 @@ SEQ_BP_DICT = {}
 
 def convert_edge_dict(in_path):
     """
-    TODO
-    :param in_path:
-    :return:
+    Reads in the output matrix of edge weights and converts to a dict of dicts.
+        Used for debugging.
+
+    :param in_path: path for .tsv file matrix
+    :return: (dict) dict of dicts
     """
     dict_of_dicts = {}
     # Read the TSV file and convert it into a dictionary of dictionaries
@@ -43,7 +45,6 @@ def convert_edge_dict(in_path):
         for row in tsvreader:
             dict_of_dicts[row['header1']] = {k: v for k, v in row.items() if k != 'header1'}
     return dict_of_dicts
-
 
 def count_bps(sequence_file):
     """
@@ -54,7 +55,20 @@ def count_bps(sequence_file):
     """
     base_file_ext = os.path.splitext(sequence_file.split(".gz")[0])[1]
     regex_command = '/^>/ {{next}}' if base_file_ext[-1] == "a" else 'NR%4==2'
-    print_command = 'gzcat' if sequence_file.endswith('.gz') else 'cat'
+    print_command = 'cat'
+    if sequence_file.endswith('.gz'): # check if gzcat or zcat
+        print_command = "zcat"
+        try:
+            subprocess.check_output("{} {}".format(print_command, sequence_file),
+                                    shell=True, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError:
+            print_command = "zcat"
+            try:
+                subprocess.check_output("{} {}".format(print_command, sequence_file), shell=True)
+            except subprocess.CalledProcessError:
+                print("Unable to gather bp count from input reads. "
+                      "No normalization weights will be applied.")
+                return 1
     try:
         with subprocess.Popen([print_command, sequence_file], stdout=subprocess.PIPE) \
                 as zcat_process:
@@ -66,7 +80,8 @@ def count_bps(sequence_file):
                 process_output, _ = awk_process.communicate()
                 return int(process_output.strip())
     except subprocess.CalledProcessError:
-        print("Unable to gather bp count from input reads. No weights will be applied.")
+        print("Unable to gather bp count from input reads. "
+              "No normalization weights will be applied.")
         return 1
 
 def read_graph(graph_path):
@@ -102,10 +117,14 @@ def read_graph(graph_path):
 
 def add_node_coverage_to_graph(graph, df_nodes_coverage):
     """
+    Adds a parameter 'log_fold_change_vector' to each node in the networkx graph
+        based on the data in df_nodes_coverage.
 
-    :param graph:
-    :param df_nodes_coverage:
-    :return:
+    :param graph: networkx graph
+    :param df_nodes_coverage: dataframe where 'node_id' corresponds to the name
+        of the nodes in the graph and [log_fold_change_$t] contains columns with
+        log fold change coverage for the node at timepoint $t
+    :return: (networkx G) updated networkx graph
     """
     log_fold_change_columns = ['node_id'] + \
                              [col for col in df_nodes_coverage.columns
@@ -122,8 +141,12 @@ def add_node_coverage_to_graph(graph, df_nodes_coverage):
 
 def calculate_log_fold_change_edge_coverage(df_nodes):
     """
-
-    :return:
+    Takes in global parameter COVERAGE_EDGE_DICTS and df containing
+        a list of all node names under column 'node_id' to produce
+        log fold change in edge coverage between subsequent entries
+    param df_nodes: df with column 'node_id' containing node names
+    :return: (list) list of matricies (dict of dicts) containing
+        edge log fold change in coverage.
     """
     # can speed this up with matricies rather than for loops
     lfc_list = []
@@ -142,9 +165,13 @@ def calculate_log_fold_change_edge_coverage(df_nodes):
 
 def label_indel(vectors_stacked, std_thresh=1):
     """
+    Takes in the log fold change in edge coverage for a graph triangle
+        and outputs locations containing an indel.
 
-    :param vectors:
-    :return:
+    :param vectors_stacked: stacked vectors of log fold change
+    :param std_thresh: number of stds away from the median needed to express outlier
+    :return: (dict) key is the index location within inner list containing an indel (timepoint)
+        value is the index of the vector containing the indel (node)
     """
     # Calculate mean and standard deviation across the three vectors for each index
     medians = np.median(vectors_stacked, axis=0)
@@ -158,12 +185,13 @@ def label_indel(vectors_stacked, std_thresh=1):
 
 def label_mutations(cycle, vectors_stacked, datas, std_thresh=1):
     """
+    Detected mutation in a cycle of length 4 and updated datas dictionary accordingly.
 
-    :param cycle:
-    :param vectors:
-    :param datas:
-    :param std_thresh:
-    :return:
+    :param cycle: list of 4 nodes
+    :param vectors_stacked: corresponding log fold change coverage vectors stacked
+    :param datas: dict of SVs detected
+    :param std_thresh: number of stds away from the median needed to express mutation
+    :return: (dict) updated datas to contain mutation in this cycle
     """
     medians = np.median(vectors_stacked, axis=0)
     std_devs = np.std(vectors_stacked, axis=0)
@@ -187,14 +215,17 @@ def label_mutations(cycle, vectors_stacked, datas, std_thresh=1):
 
 def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh):
     """
+    Function to detect and return SVs in graph.
 
-    :param graph:
-    :param df_nodes:
-    :return:
+    :param graph: networkx graph
+    :param df_nodes: df containing node names under column 'node_id'
+    :param node_std_thresh: number of stds away from the median needed to express indel or mutation
+    :param edge_lfc_thresh: lfc change minimum for change in edge coverage to express duplication
+    :return: df of SVs
     """
     datas = [{node:[] for node in df_nodes['node_id']} for _ in range(N_TIMESTEPS)]
     edge_coverage_fold_change = calculate_log_fold_change_edge_coverage(df_nodes)
-    cycles = nx.cycle_basis(graph)
+    cycles = sorted(nx.simple_cycles(graph, 4))
     for cycle in cycles:
         if len(cycle) == 1: # look for tandem duplication/deletion
             for timestep in range(N_TIMESTEPS):
@@ -244,9 +275,11 @@ def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh)
 
 def process_row_coverage(row, timestep):
     """
-    helper function to parse each row in the .paf alignment file (TODO - update)
+    Parses row in the .paf alignment file and updates COVERAGE_DICTS
+        global parameter.
 
     :param row: row in the .paf file
+    :param timestep: current timestep for row to be processed
     :return: (pd series) containing 'node tuples' entry of each coveraged node
         and respective bps covered
     """
@@ -279,7 +312,7 @@ def process_row_coverage(row, timestep):
 
 def create_coverage_df(alignments_pafs, df_nodes):
     """
-    add to df_nodes with the coverage of each node based on the supplied alignments_pafs
+    Add to df_nodes with the coverage of each node based on the supplied alignments_pafs.
 
     :param alignments_gafs: list of paths of alignment .gaf in order of the series
     :return: (df) df nodes and (list) coverage cols of column names containing new coverage values
@@ -307,8 +340,8 @@ def create_coverage_df(alignments_pafs, df_nodes):
 
 def create_coverage_normalized_df(df_nodes_coverage, coverage_cols):
     """
-    adjust each of the coverage_cols in df_nodes_coverage to be nomalized based on the number of
-    base pairs in the aligned sample
+    Adjust each of the coverage_cols in df_nodes_coverage to be nomalized based on the number of
+        base pairs in the aligned sample.
 
     :param df_nodes_coverage: df containing coverage of each node
     :param coverage_cols: column headers for the columns containing series coverage information
@@ -325,7 +358,7 @@ def create_coverage_normalized_df(df_nodes_coverage, coverage_cols):
 def map_to_heatmap_color(value, group_max, group_min=0, palette="rocket_r"):
     """
     Generates color hex value for value on a heatmap scale from group_min to
-        group_max with seaborn color palette
+        group_max with seaborn color palette.
 
     :param value: float value to calculate heatmap color of
     :param group_max: float max for scale
@@ -344,7 +377,7 @@ def map_to_heatmap_color(value, group_max, group_min=0, palette="rocket_r"):
 
 def add_coverage_colors_to_nodes_df(df_nodes_coverage, coverage_cols, normalized=False):
     """
-    Add colors values to coverage_cols in df_nodes_coverages
+    Add colors values to coverage_cols in df_nodes_coverages.
 
     :param df_nodes_coverage: dataframe with coverage values
     :param coverage_cols: columns containing coverage values
@@ -376,7 +409,7 @@ def add_coverage_diff_colors_to_nodes_df(df_nodes_coverage, diff_coverage_cols,
         Only used for output string.
     :param percentage: boolean of if these are percentage (vs linear) difference values.
         Only used for output string.
-    :return: updated df with color hex values to correspond to coverage diff values.
+    :return: (df) updated with color hex values to correspond to coverage diff values.
     """
     coverage_file = " normalized" if normalized else ""
     percent_or_diff = "percent" if percentage else "linear"
@@ -397,9 +430,10 @@ def add_coverage_diff_colors_to_nodes_df(df_nodes_coverage, diff_coverage_cols,
 def calculate_diff_to_nodes_df(df_nodes_coverage, coverage_cols):
     """
     Add 2 columns for each consecutive col in coverage_cols: 1 for
-        linear difference and 1 for percentage difference
+        linear difference and 1 for percentage difference.
 
     :param df_nodes_coverage: dataframe with coverage values
+    :param coverage_cols: list of column names containing coverage information
     :return: (df) updated df with consecutive difference columns, (list) diff_cols
         of columns containing linear difference, (list) diff_percent_cols of columns
         containing percent difference
@@ -430,7 +464,7 @@ def create_both_nodes_coverage_dfs(alignments_list_ordered, df_nodes):
 
     :param alignments_list_ordered: list of paths to alignments
     :param df_nodes: dataframe containing all nodes in graph
-    :return: list of two dataframes: raw and normalized
+    :return: (list) of two dataframes: raw and normalized
     """
     df_nodes_coverage, alignment_stems_list = create_coverage_df(alignments_list_ordered, df_nodes)
     df_nodes_coverage_norm = create_coverage_normalized_df(df_nodes_coverage, alignment_stems_list)
@@ -508,8 +542,6 @@ if __name__ == "__main__":
         args.output_dir = os.path.normpath(os.path.join(os.getcwd(), args.output_dir))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
-    #else:
-        #raise ValueError("Output directory already exists: %s", args.output_dir)
     log_outpath = os.path.join(args.output_dir, 'rhea.log')
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=logging.INFO, handlers=[logging.FileHandler(log_outpath),

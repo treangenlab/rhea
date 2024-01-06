@@ -1,9 +1,8 @@
+## function to convert sequences from the SURVIVOR VCF output into a fasta
 
 import os
 import argparse
 import subprocess
-
-from Bio import SeqIO
 import pandas as pd
 
 
@@ -34,10 +33,10 @@ with open(fasta_outpath, 'w') as fasta_file:
     for index, row in df.iterrows():
         if row['ID'][:3] == "INS":
             extracted_seq = row['ALT']
-            fasta_file.write(">{}\n{}\n".format(row['ID'], extracted_seq))
+            fasta_file.write(">{}-{}\n{}\n".format(out_base, row['ID'], extracted_seq))
         elif row['ID'][:3] == "DEL":
             extracted_seq = row['REF']
-            fasta_file.write(">{}\n{}\n".format(row['ID'], extracted_seq))
+            fasta_file.write(">{}-{}\n{}\n".format(out_base, row['ID'], extracted_seq))
         elif row['ID'][:3] == "DUP" or row['ID'][:3] == "INV":
             extracted_seq = subprocess.check_output("sed '1d' {} | tr -d '\n' | cut -c {}-{}"
                                                 .format(args.reference, row['POS'], row['POSEND']),
