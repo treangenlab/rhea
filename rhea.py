@@ -511,8 +511,8 @@ if __name__ == "__main__":
         "--minigraph-exec", type=str, default='minigraph',
         help="path to minigraph executable")
     parser.add_argument(
-        '--output-dir', '-o', type=str, default=os.path.join(os.getcwd(), "RHEA_results"),
-        help='output directory name [./RHEA_results]')
+        '--output-dir', '-o', type=str, default=os.path.join(os.getcwd(), "rhea_results"),
+        help='output directory name [./rhea_results]')
     parser.add_argument(
         '--raw-diff', action="store_true",
         help='Use raw coverage difference rather than normalized')
