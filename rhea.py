@@ -221,13 +221,13 @@ def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh)
     :param df_nodes: df containing node names under column 'node_id'
     :param node_std_thresh: number of stds away from the median needed to express indel or mutation
     :param edge_lfc_thresh: lfc change minimum for change in edge coverage to express duplication
-    :return: df of SVs
+    :return: list of SV data where each entry is a dict of nodes and their SVs for a given timepoint
     """
-    datas = [{node:[] for node in df_nodes['node_id']} for _ in range(N_TIMESTEPS)]
+    datas = [{node: [] for node in df_nodes['node_id']} for _ in range(N_TIMESTEPS)]
     edge_coverage_fold_change = calculate_log_fold_change_edge_coverage(df_nodes)
-    cycles = sorted(nx.simple_cycles(graph, 4))
+    cycles = sorted(nx.simple_cycles(graph, length_bound=4))
     for cycle in cycles:
-        if len(cycle) == 1: # look for tandem duplication/deletion
+        if len(cycle) == 1:  # look for tandem duplication/deletion
             for timestep in range(N_TIMESTEPS):
                 if edge_coverage_fold_change[timestep][cycle[0]][cycle[0]] \
                         > edge_lfc_thresh:
@@ -235,7 +235,7 @@ def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh)
                 elif edge_coverage_fold_change[timestep][cycle[0]][cycle[0]] < \
                         (edge_lfc_thresh * -1):
                     datas[timestep][cycle[0]].append(('tandem duplication loss', '', '', ''))
-        elif len(cycle) == 3: # detect indels
+        elif len(cycle) == 3:  # detect indels
             vectors = np.vstack([graph.nodes[node]['log_fold_change_vector'] for node in cycle])
             outlier_vectors = label_indel(vectors, node_std_thresh)
             for timestep, outlier_index in outlier_vectors.items():
@@ -259,6 +259,18 @@ def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh)
                         dup_node = node_b
                     if not datas[timestep][dup_node]:
                         datas[timestep][dup_node].append(['tandem duplication gain', '', '', ''])
+    return datas
+
+def output_sv_detection_files(datas, df_nodes, out_dir):
+    """
+    Output a tsv of SV files for each timestep and return a combined collapsed df
+
+    :param datas: list of SV data where each entry is a dict of nodes
+        and their SVs for a given timepoint
+    :param df_nodes: df containing node names under column 'node_id'
+    :param out_dir: path to directory for all output files
+    :return: (df) combined collapsed df of SVs for each timepoint
+    """
     # add SVs for each timestep into nodes_df
     counter = 0
     merged_sv_dfs = [df_nodes.copy()]
@@ -267,7 +279,12 @@ def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh)
                                 ["t{}-{}".format(counter, value) for value in SV_COLUMN_NAMES]
         new_df = pd.DataFrame([(node_id, *tup) for node_id, tuples in data.items()
                                for tup in tuples], columns=column_names_timestep)
-        merged_sv_dfs.append(new_df)
+        new_merged_df = pd.merge(df_nodes.copy(), new_df, on='node_id', how='left')
+        new_df_outpath = os.path.join(out_dir, "structual_variants-t{}.tsv".format(counter))
+        new_merged_df.to_csv(new_df_outpath, index=False, sep='\t')
+        new_df_collapsed = new_df.groupby('node_id').agg(lambda x: ', '.
+                                                         join(filter(None, map(str, set(x)))))
+        merged_sv_dfs.append(new_df_collapsed)
         counter += 1
     df_merged = reduce(lambda left, right: pd.merge(left, right, on='node_id', how='outer'),
                        merged_sv_dfs)
@@ -284,7 +301,7 @@ def process_row_coverage(row, timestep):
         and respective bps covered
     """
     # gather list of all nodes in alignment
-    target_name_parts = [item for item in re.split('<|>| ', row['target name']) if item]
+    target_name_parts = [item for item in re.split('<|>| ', str(row['target name'])) if item]
     if len(target_name_parts) == 1: # if alignment is only to one node
         node_align_length = row['target end'] - row['target start']
         part_trim = target_name_parts[0].split("_")[-1]
@@ -397,7 +414,7 @@ def add_coverage_colors_to_nodes_df(df_nodes_coverage, coverage_cols, normalized
     return df_nodes_coverage
 
 def add_coverage_diff_colors_to_nodes_df(df_nodes_coverage, diff_coverage_cols,
-                                         normalized=False, percentage=False):
+                                         normalized=False, lfc=False):
     """
     Add colors values to diff_coverage_cols in df_nodes_coverages to show change
         between elements in series data.
@@ -407,19 +424,19 @@ def add_coverage_diff_colors_to_nodes_df(df_nodes_coverage, diff_coverage_cols,
         between consecutive series elements
     :param normalized: boolean of if these are normalized values.
         Only used for output string.
-    :param percentage: boolean of if these are percentage (vs linear) difference values.
+    :param lfc: boolean of if these are log fold change (vs linear) difference values.
         Only used for output string.
     :return: (df) updated with color hex values to correspond to coverage diff values.
     """
     coverage_file = " normalized" if normalized else ""
-    percent_or_diff = "percent" if percentage else "linear"
+    lfc_or_linear = "log fold change" if lfc else "linear change"
 
     df_nodes_coverage = df_nodes_coverage.fillna(0)
     max_diff = max(df_nodes_coverage[diff_coverage_cols].quantile(.95))
     min_diff = max(df_nodes_coverage[diff_coverage_cols].quantile(.05))
     min_max = max(max_diff, abs(min_diff))
     logging.info("Min/Max val for coverage%s %s difference color spectrum: %s",
-                 coverage_file, percent_or_diff, min_max)
+                 coverage_file, lfc_or_linear, min_max)
     for col in diff_coverage_cols:
         df_nodes_coverage[f"{col}_colour"] = df_nodes_coverage[col].apply(map_to_heatmap_color,
                                                                       group_max=min_max,
@@ -430,13 +447,13 @@ def add_coverage_diff_colors_to_nodes_df(df_nodes_coverage, diff_coverage_cols,
 def calculate_diff_to_nodes_df(df_nodes_coverage, coverage_cols):
     """
     Add 2 columns for each consecutive col in coverage_cols: 1 for
-        linear difference and 1 for percentage difference.
+        linear difference and 1 for lfc difference.
 
     :param df_nodes_coverage: dataframe with coverage values
     :param coverage_cols: list of column names containing coverage information
     :return: (df) updated df with consecutive difference columns, (list) diff_cols
-        of columns containing linear difference, (list) diff_percent_cols of columns
-        containing percent difference
+        of columns containing linear difference, (list) diff_lfc_cols of columns
+        containing lfc difference
     """
     linear_change_cols, log_fold_change_cols = [], []
     # set all coverage below 1 to 1 for calculating difference
@@ -459,7 +476,7 @@ def create_both_nodes_coverage_dfs(alignments_list_ordered, df_nodes):
     """
     Generate both df of nodes coverage and a normalized version. Contains coverage
         for each alignment in alighments_list_ordered with corresponding hex color values.
-        Contains value for differnce between consectuive alignments (linear and percentage)
+        Contains value for differnce between consectuive alignments (linear and lfc)
         with corresponding hex values.
 
     :param alignments_list_ordered: list of paths to alignments
@@ -472,12 +489,12 @@ def create_both_nodes_coverage_dfs(alignments_list_ordered, df_nodes):
     for (df_node, normalized_flag) in [(df_nodes_coverage, False), (df_nodes_coverage_norm, True)]:
         df_node = add_coverage_colors_to_nodes_df(df_node, alignment_stems_list,
                                                   normalized=normalized_flag)
-        df_node, cols_change, cols_change_percent = calculate_diff_to_nodes_df(
+        df_node, cols_change, cols_change_lfc = calculate_diff_to_nodes_df(
             df_node, alignment_stems_list)
         df_node = add_coverage_diff_colors_to_nodes_df(df_node, cols_change,
                                                        normalized=normalized_flag)
-        df_node = add_coverage_diff_colors_to_nodes_df(df_node, cols_change_percent,
-                                                  normalized=normalized_flag, percentage=True)
+        df_node = add_coverage_diff_colors_to_nodes_df(df_node, cols_change_lfc,
+                                                  normalized=normalized_flag, lfc=True)
         output_dfs.append(df_node)
     return output_dfs[0], output_dfs[1]
 
@@ -520,6 +537,10 @@ if __name__ == "__main__":
         '--threads', '-t', type=int, default=3,
         help='threads [3]')
     args = parser.parse_args()
+
+    # check more than one graph input is provied:
+    if len(args.input) < 2:
+        raise ValueError("A minimum of 2 input files are required.")
 
     # check Flye is installed if graph is not provided
     if not args.input_graph: # check in input is sequences or alignments
@@ -629,8 +650,15 @@ if __name__ == "__main__":
         networkx_graph = add_node_coverage_to_graph(networkx_graph, nodes_df_coverage)
     else:
         networkx_graph = add_node_coverage_to_graph(networkx_graph, nodes_df_coverage_norm)
-    variants_df = detect_structual_variants(networkx_graph, nodes_df,
+    variants_data = detect_structual_variants(networkx_graph, nodes_df,
                                             args.node_std, args.edge_lfc_thresh)
-    variants_df_outpath = os.path.join(args.output_dir, "structual_variants.tsv")
-    variants_df.to_csv(variants_df_outpath, index=False, sep='\t')
+    variants_df = output_sv_detection_files(variants_data, nodes_df, args.output_dir)
+    if args.raw_diff:
+        complete_df = pd.merge(variants_df, nodes_df_coverage,
+                               on=['node', 'node_id', 'node_length'], how='left')
+    else:
+        complete_df = pd.merge(variants_df, nodes_df_coverage_norm,
+                               on=['node', 'node_id', 'node_length'], how='left')
+    complete_df_outpath = os.path.join(args.output_dir, "Bandage_metadata.csv")
+    complete_df.to_csv(complete_df_outpath, index=False)
     logging.info("Rhea complete: %s", args.output_dir)
