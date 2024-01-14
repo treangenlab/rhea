@@ -276,11 +276,11 @@ def output_sv_detection_files(datas, df_nodes, out_dir):
     merged_sv_dfs = [df_nodes.copy()]
     for data in datas:
         column_names_timestep = ['node_id'] + \
-                                ["t{}-{}".format(counter, value) for value in SV_COLUMN_NAMES]
+                                ["c{}-{}".format(counter, value) for value in SV_COLUMN_NAMES]
         new_df = pd.DataFrame([(node_id, *tup) for node_id, tuples in data.items()
                                for tup in tuples], columns=column_names_timestep)
         new_merged_df = pd.merge(df_nodes.copy(), new_df, on='node_id', how='left')
-        new_df_outpath = os.path.join(out_dir, "structual_variants-t{}.tsv".format(counter))
+        new_df_outpath = os.path.join(out_dir, "structual_variants-c{}.tsv".format(counter))
         new_merged_df.to_csv(new_df_outpath, index=False, sep='\t')
         new_df_collapsed = new_df.groupby('node_id').agg(lambda x: ', '.
                                                          join(filter(None, map(str, set(x)))))
@@ -289,6 +289,7 @@ def output_sv_detection_files(datas, df_nodes, out_dir):
     df_merged = reduce(lambda left, right: pd.merge(left, right, on='node_id', how='outer'),
                        merged_sv_dfs)
     return df_merged
+
 
 def process_row_coverage(row, timestep):
     """
@@ -300,6 +301,9 @@ def process_row_coverage(row, timestep):
     :return: (pd series) containing 'node tuples' entry of each coveraged node
         and respective bps covered
     """
+    # account for reads with no alignment
+    if not isinstance(row['target name'], str):
+        return
     # gather list of all nodes in alignment
     target_name_parts = [item for item in re.split('<|>| ', str(row['target name'])) if item]
     if len(target_name_parts) == 1: # if alignment is only to one node
@@ -531,6 +535,9 @@ if __name__ == "__main__":
         '--output-dir', '-o', type=str, default=os.path.join(os.getcwd(), "rhea_results"),
         help='output directory name [./rhea_results]')
     parser.add_argument(
+        '--collapse', action="store_true",
+        help='Does not use --keep-haplotypes strain variation for metaFlye')
+    parser.add_argument(
         '--raw-diff', action="store_true",
         help='Use raw coverage difference rather than normalized')
     parser.add_argument(
@@ -570,10 +577,12 @@ if __name__ == "__main__":
 
     # Flye - create assembly graph
     if not args.input_graph:
+        graph_detail = "" if args.collapse else "--keep-haplotype"
         flye_output = os.path.join(args.output_dir, 'flye_output')
-        subprocess.check_output("{} {} {} --out-dir {} --threads {} --meta --keep-haplotypes"
+        subprocess.check_output("{} {} {} --out-dir {} --threads {} --meta {}"
                             .format(args.flye_exec, ''.join(["--", args.type]),
-                                    " ".join(args.input), flye_output, args.threads),
+                                    " ".join(args.input), flye_output, args.threads,
+                                    graph_detail),
                                 shell=True)
         args.input_graph = os.path.join(flye_output, "assembly_graph.gfa")
         logging.info("Metaflye output complete: %s", flye_output)
