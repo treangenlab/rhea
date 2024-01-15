@@ -1,4 +1,4 @@
-# Rhea: Reference-free Heterogeneity and Evolution in Assembly graphs
+# rhea: reference-free heterogeneity and evolution in assembly graphs
 
 ### Description
 
