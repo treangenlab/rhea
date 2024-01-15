@@ -1,0 +1,13 @@
+image: continuumio/anaconda3:latest
+
+before_script:
+  - if conda env list | grep -q 'rhea'; then
+  - conda env remove --name rhea
+  - fi;
+  - conda env create -f environment.yml
+  - source activate rhea
+
+test1:
+  stage: test
+  script:
+    - python ./rhea.py ./example/1.fastq ./example/2.fastq

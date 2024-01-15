@@ -1,15 +1,14 @@
-name: custom-rhea
+name: rhea
 
 channels:
 - bioconda
 - conda-forge
 
 dependencies:
-- biopython
-- python
+- python>=3.8
 - numpy
 - pandas
-- networkx>=2.6
+- networkx>=3.2
 - seaborn
 - flye
 - minigraph
