@@ -293,10 +293,10 @@ def output_sv_detection_files(datas, df_nodes, out_dir):
 
 def process_row_coverage(row, timestep):
     """
-    Parses row in the .paf alignment file and updates COVERAGE_DICTS
+    Parses row in the .gaf alignment file and updates COVERAGE_DICTS
         global parameter.
 
-    :param row: row in the .paf file
+    :param row: row in the .gaf file
     :param timestep: current timestep for row to be processed
     :return: (pd series) containing 'node tuples' entry of each coveraged node
         and respective bps covered
@@ -331,9 +331,9 @@ def process_row_coverage(row, timestep):
             prev_part_trim = part_trim
 
 
-def create_coverage_df(alignments_pafs, df_nodes):
+def create_coverage_df(alignments_gafs, df_nodes):
     """
-    Add to df_nodes with the coverage of each node based on the supplied alignments_pafs.
+    Add to df_nodes with the coverage of each node based on the supplied alignments_gafs.
 
     :param alignments_gafs: list of paths of alignment .gaf in order of the series
     :return: (df) df nodes and (list) coverage cols of column names containing new coverage values
@@ -342,12 +342,12 @@ def create_coverage_df(alignments_pafs, df_nodes):
     coverage_cols = []
     timestep = 0
 
-    for alignment_paf in alignments_pafs:
-        align_stem = os.path.splitext(os.path.basename(alignment_paf))[0]
+    for alignment_gaf in alignments_gafs:
+        align_stem = os.path.splitext(os.path.basename(alignment_gaf))[0]
         logging.info("Calculating graph coverage for: %s", align_stem)
-        paf_df = pd.read_csv(alignment_paf, names=PAF_HEADERS, sep='\t')
+        gaf_df = pd.read_csv(alignment_gaf, names=PAF_HEADERS, sep='\t')
         # Apply the function to each row to update node coverage lengths
-        paf_df.apply(process_row_coverage, axis=1, timestep=timestep)
+        gaf_df.apply(process_row_coverage, axis=1, timestep=timestep)
 
         # add updated coverage to df_nodes, normalizing for the length of the node
         node_coverage_len_df = pd.DataFrame(list(COVERAGE_DICTS[timestep].items()),
@@ -578,7 +578,7 @@ if __name__ == "__main__":
     # Flye - create assembly graph
     if not args.input_graph:
         graph_detail = "" if args.collapse else "--keep-haplotype"
-        flye_output = os.path.join(args.output_dir, 'flye_output')
+        flye_output = os.path.join(args.output_dir, 'metaflye')
         subprocess.check_output("{} {} {} --out-dir {} --threads {} --meta {}"
                             .format(args.flye_exec, ''.join(["--", args.type]),
                                     " ".join(args.input), flye_output, args.threads,

@@ -6,7 +6,7 @@ import subprocess
 import pandas as pd
 
 
-parser = argparse.ArgumentParser(description='Extract SV information frmo SURVIVOR output VCF')
+parser = argparse.ArgumentParser(description='Extract SV information from SURVIVOR output VCF')
 parser.add_argument('reference', help='Path to the reference genome file in FASTA format')
 parser.add_argument('VCF_file', help='Path to the SURVIVOR VCF file')
 parser.add_argument('-o', '--output-dir', default='./extracted', help='Name of the output directory (default: extracted)')
