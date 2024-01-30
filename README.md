@@ -17,6 +17,8 @@ tandem duplicates. Insertions and deletions are detected by observing a triangle
 higher (insertion) or lower (deletion) log fold change. Complex indels are noted by a square with one or two outliers; 
 in the case of two outliers, the two outliers must be of opposing sides of the median and not have an edge between them. 
 Tandem duplicates are detected by a log fold change of a self-loop edge coverage greater than 1.
+
+
 ### Demo
 
 Here is a toy example to detect SV in two different variants E. coli in a metagenome.
@@ -96,7 +98,7 @@ If you cite rhea, be sure to also cite [metaFlye](https://www.nature.com/article
 [mingraph](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02168-z).
 If you use rhea visuals, be sure to cite [Bandage](https://academic.oup.com/bioinformatics/article/31/20/3350/196114).
 
-Rhea publication: Curry, K. D., Yu, F. B., Vance, S. E., Segarra, S., Bhaya, D., Chikhi, R., Rocha, E. P. C., 
+Rhea preprint: Curry, K. D., Yu, F. B., Vance, S. E., Segarra, S., Bhaya, D., Chikhi, R., Rocha, E. P. C., 
 & Treangen, T. J. (2024). Reference-free Structural Variant Detection in Microbiomes via Long-read Coassembly Graphs 
 (p. 2024.01.25.577285). bioRxiv. https://doi.org/10.1101/2024.01.25.577285
 
