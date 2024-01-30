@@ -208,9 +208,9 @@ def label_mutations(cycle, vectors_stacked, datas, std_thresh=1):
                 if vectors_stacked[i_mut][timestep] < vectors_stacked[i_mut+2][timestep]:
                     mut_win, mut_loss = i_mut+2, i_mut
                 datas[timestep][cycle[mut_win]].append(
-                    ("mutation win", cycle[mut_loss], cycle[i_mut+1], cycle[(i_mut+3)%4]))
+                    ("complex insertion", cycle[mut_loss], cycle[i_mut+1], cycle[(i_mut+3)%4]))
                 datas[timestep][cycle[mut_loss]].append(
-                    ("mutation loss", cycle[mut_win], cycle[i_mut+1], cycle[(i_mut+3)%4]))
+                    ("complex deletion", cycle[mut_win], cycle[i_mut+1], cycle[(i_mut+3)%4]))
     return datas
 
 def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh):

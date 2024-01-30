@@ -3,18 +3,20 @@
 ### Description
 
 Rhea is a software used to detect structural variants (SVs) between steps in long-read metagenomic series data. Current 
-SVs detected include: insertions, deletions, mutations, and tandem duplications. Below is a graphic represtation of the rhea pipeline.
+SVs detected include: insertions, deletions, complex indel (insertion and deletion in the same location), and tandem duplications. Below is a graphic represtation of the rhea pipeline.
 
 <p align="center">
   <img src="./docs/pipeline.png" alt="pipeline_image"/>
 </p>
-(a) To utilize rhea, first, microbiome series data is must be collected and long whole genome sequencing reads generated. 
-Then, within rhea, a single assembly graph from all reads in the series is created with metaFlye. 
-Reads from each sample are then separately aligned to the comprehensive graph with minigraph. 
-Rhea evaluates log fold change in coverage between series steps for SV-specific patterns in the assembly graph to 
-detect structural variants between steps. 
-(b) Assembly graph patterns detected in rhea, which indicate potential insertions, deletions, mutations, and tandem duplicates. 
-
+(a) To utilize rhea, first, microbiome series data must be collected and long whole genome sequencing reads generated. 
+Then, within rhea, a coassembly graph of all reads in the series is created with metaFlye. Reads from each sample are 
+then separately aligned to the coassembly graph with minigraph. Rhea evaluates log fold change in coverage between 
+series steps for SV-specific patterns in the assembly graph to detect structural variants between steps. 
+(b) Assembly graph patterns detected in rhea, which indicate potential insertions, deletions, complex indels, and 
+tandem duplicates. Insertions and deletions are detected by observing a triangle where one node has a significantly 
+higher (insertion) or lower (deletion) log fold change. Complex indels are noted by a square with one or two outliers; 
+in the case of two outliers, the two outliers must be of opposing sides of the median and not have an edge between them. 
+Tandem duplicates are detected by a log fold change of a self-loop edge coverage greater than 1.
 ### Demo
 
 Here is a toy example to detect SV in two different variants E. coli in a metagenome.
@@ -80,7 +82,7 @@ Rhea output can be used in conjunction with [Bandage](https://rrwick.github.io/B
 |--type | nano-raw | type of reads for MetaFlye graph construction ['pacbio-raw', 'pacbio-corr', 'pacbio-hifi', 'nano-raw', 'nano-corr', 'nano-hq'] |
 |--input-graph | (generated) | path to graph if alignments are provided (req. with alignments)|
 |--bp-table | (generated)	| path to bp counts per sample if alignments are provided (req. with alignments)|
-|--node-std | 1	| number of standard deviations away from median to call indels and mutations|
+|--node-std | 1	| number of standard deviations away from median to call indels |
 |--edge-lfc-thresh | 1	| number of lfc increase to call duplications |
 |--raw-diff | FALSE | set to true if no normalization for bp count between samples is desired |
 |--collapse | FALSE | activate to collapse metaFlye bubble (i.e. not use --keep-haplotypes) |
@@ -94,7 +96,10 @@ If you cite rhea, be sure to also cite [metaFlye](https://www.nature.com/article
 [mingraph](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02168-z).
 If you use rhea visuals, be sure to cite [Bandage](https://academic.oup.com/bioinformatics/article/31/20/3350/196114).
 
-Rhea publication: TBD
+Rhea publication: Curry, K. D., Yu, F. B., Vance, S. E., Segarra, S., Bhaya, D., Chikhi, R., Rocha, E. P. C., 
+& Treangen, T. J. (2024). Reference-free Structural Variant Detection in Microbiomes via Long-read Coassembly Graphs 
+(p. 2024.01.25.577285). bioRxiv. https://doi.org/10.1101/2024.01.25.577285
+
 
 Validation tests & scripts: https://osf.io/fvhw8/
 
