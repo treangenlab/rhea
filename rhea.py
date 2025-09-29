@@ -213,7 +213,7 @@ def label_mutations(cycle, vectors_stacked, datas, std_thresh=1):
                     ("complex deletion", cycle[mut_win], cycle[i_mut+1], cycle[(i_mut+3)%4]))
     return datas
 
-def detect_structual_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh):
+def detect_structural_variants(graph, df_nodes, node_std_thresh, edge_lfc_thresh):
     """
     Function to detect and return SVs in graph.
 
@@ -280,7 +280,7 @@ def output_sv_detection_files(datas, df_nodes, out_dir):
         new_df = pd.DataFrame([(node_id, *tup) for node_id, tuples in data.items()
                                for tup in tuples], columns=column_names_timestep)
         new_merged_df = pd.merge(df_nodes.copy(), new_df, on='node_id', how='left')
-        new_df_outpath = os.path.join(out_dir, "structual_variants-c{}.tsv".format(counter))
+        new_df_outpath = os.path.join(out_dir, "structural_variants-c{}.tsv".format(counter))
         new_merged_df.to_csv(new_df_outpath, index=False, sep='\t')
         new_df_collapsed = new_df.groupby('node_id').agg(lambda x: ', '.
                                                          join(filter(None, map(str, set(x)))))
@@ -659,7 +659,7 @@ if __name__ == "__main__":
         networkx_graph = add_node_coverage_to_graph(networkx_graph, nodes_df_coverage)
     else:
         networkx_graph = add_node_coverage_to_graph(networkx_graph, nodes_df_coverage_norm)
-    variants_data = detect_structual_variants(networkx_graph, nodes_df,
+    variants_data = detect_structural_variants(networkx_graph, nodes_df,
                                             args.node_std, args.edge_lfc_thresh)
     variants_df = output_sv_detection_files(variants_data, nodes_df, args.output_dir)
     if args.raw_diff:
