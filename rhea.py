@@ -503,7 +503,7 @@ def create_both_nodes_coverage_dfs(alignments_list_ordered, df_nodes):
     return output_dfs[0], output_dfs[1]
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--version', '-v', action='version', version='%(prog)s v' + __version__)
     parser.add_argument(
@@ -671,3 +671,7 @@ if __name__ == "__main__":
     complete_df_outpath = os.path.join(args.output_dir, "Bandage_metadata.csv")
     complete_df.to_csv(complete_df_outpath, index=False)
     logging.info("Rhea complete: %s", args.output_dir)
+
+
+if __name__ == "__main__":
+    main()
