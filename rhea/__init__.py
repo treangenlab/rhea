@@ -9,7 +9,6 @@ __author__ = 'Kristen Curry'
 __version__ = '1.0.0'
 __date__ = 'Jan 2024'
 
-import sys
 import os
 import importlib.util
 
