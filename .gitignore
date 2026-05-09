@@ -15,6 +15,7 @@ build/
 # Rhea results
 extra/*
 rhea_results/*
+results_rhea/
 
 # example data and test scripts
 example/*

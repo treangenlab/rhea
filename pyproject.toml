@@ -7,14 +7,12 @@ name = "rhea"
 version = "1.0.0"
 description = "Reference-free heterogeneity and evolution in assembly graphs"
 readme = "README.md"
-license = {text = "MIT"}
-authors = [
-    {name = "Kristen Curry", email = "kristen.curry@rice.edu"}
-]
-keywords = ["metagenomics", "structural variants", "assembly graphs", "long-read sequencing"]
 
 [project.scripts]
 rhea = "rhea:main"
+
+[tool.setuptools]
+packages = ["rhea"]
 
 [project.urls]
 Repository = "https://github.com/treangenlab/rhea"

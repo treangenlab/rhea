@@ -46,6 +46,7 @@ git clone https://github.com/treangenlab/rhea.git
 cd rhea
 conda env create -f environment.yml
 conda activate rhea
+```
 
 - Step 2: Install rhea as a python package (_optional_)
 _if you want to omit this step, you can run rhea with `python rhea.py` instead of directly calling `rhea`_
