@@ -484,7 +484,7 @@ def calculate_diff_to_nodes_df(df_nodes_coverage, coverage_cols):
     # set all coverage below 1 to 1 for calculating difference
     df_coverage_adjusted = pd.DataFrame()
     df_coverage_adjusted[coverage_cols] = \
-        df_nodes_coverage[coverage_cols].applymap(lambda x: 1 if x < 1 else x)
+        df_nodes_coverage[coverage_cols].map(lambda x: 1 if x < 1 else x)
     for counter in range(len(coverage_cols)-1):
         pair = (coverage_cols[counter], coverage_cols[counter+1])
         new_linear_change_col = f"linear_change_{counter}"
