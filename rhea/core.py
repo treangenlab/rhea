@@ -301,8 +301,9 @@ def process_row_coverage(row, timestep, coverage_dicts, coverage_edges_dicts, no
     :param coverage_dicts: list of coverage dictionaries
     :param coverage_edges_dicts: list of edge coverage dictionaries  
     :param node_length_dict: dictionary mapping node names to lengths
-    :return: (pd series) containing 'node tuples' entry of each coveraged node
-        and respective bps covered
+    :return: None; updates ``coverage_dicts`` and ``coverage_edges_dicts`` in place
+        these are pd series containing 'node tuples' entry of each coveraged node and
+        respective bps covered
     """
     # account for reads with no alignment
     if not isinstance(row['target name'], str):
@@ -341,13 +342,16 @@ def create_coverage_df(alignments_gafs, df_nodes, node_length_dict):
     :param alignments_gafs: list of paths of alignment .gaf in order of the series
     :param df_nodes: dataframe containing all nodes in graph
     :param node_length_dict: dictionary mapping node names to lengths
-    :return: (df) df nodes and (list) coverage cols of column names containing new coverage values
+    :return: (df) df nodes, (list) coverage cols of column names containing new coverage
+        values, (list) coverage_dicts containing per-timestep node coverage dictionaries,
+        and (list) coverage_edges_dicts containing per-timestep edge coverage dictionaries
     """
     # for each alignment, measure node coverage
     coverage_cols = []
     timestep = 0
     n_inputs = len(alignments_gafs)
     
+    # coverage dictionaries: store coverage values for each node and edge
     coverage_dicts = [{key: 0 for key in df_nodes['node_id']} for _ in range(n_inputs)]
     coverage_edges_dicts = [{row: {col: 1 for col in df_nodes['node_id']}
                              for row in df_nodes['node_id']} for _ in range(n_inputs)]
