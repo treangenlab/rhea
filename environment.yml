@@ -1,8 +1,8 @@
 name: rhea
 
 channels:
-- bioconda
 - conda-forge
+- bioconda
 
 dependencies:
 - python>=3.8
@@ -12,3 +12,4 @@ dependencies:
 - seaborn
 - flye
 - minigraph
+- pip

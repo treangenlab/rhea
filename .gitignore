@@ -7,6 +7,16 @@ __pycache__/
 .idea/
 .Rhistory
 
+# Python package build artifacts
+rhea.egg-info/
+dist/
+build/
+
+# Rhea results
 extra/*
-RHEA_results/*
+rhea_results/*
+results_rhea/
+
+# example data and test scripts
 example/*
+tests/

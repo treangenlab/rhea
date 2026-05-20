@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rhea"
+version = "1.0.0"
+description = "Reference-free heterogeneity and evolution in assembly graphs"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "pandas",
+    "networkx>=3.2",
+    "seaborn",
+]
+
+[project.scripts]
+rhea = "rhea:main"
+
+[tool.setuptools]
+packages = ["rhea"]
+
+[project.urls]
+Repository = "https://github.com/treangenlab/rhea"

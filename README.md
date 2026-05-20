@@ -26,7 +26,7 @@ First, download t0.fasta and t1.fasta from [OSF](https://osf.io/fvhw8/) under th
 Then run rhea on the samples.
 
 ```bash
-python ./rhea.py example/t0.fasta example/t1.fasta
+rhea example/t0.fasta example/t1.fasta
 ```
 
 Expected output: All output files are expected to be in directory `rhea_results`.
@@ -39,16 +39,21 @@ Expected run time: ~5 minutes for flye
 Dependencies for rhea include: python v3.8+, [numpy](https://numpy.org/), [pandas](https://pandas.pydata.org/), 
 [networkx v3.2+](https://networkx.org/), [seaborn](https://seaborn.pydata.org/), 
 [Flye](https://github.com/fenderglass/Flye), and [minigraph](https://github.com/lh3/minigraph).
-Environment.yaml can be used build a conda environment with all necessary dependencies; 
-rhea environment will need to be activated for each rhea run.
 
+- Step 1: Clone repository and create conda environment
 ```bash
-https://github.com/treangenlab/rhea.git
+git clone https://github.com/treangenlab/rhea.git
 cd rhea
 conda env create -f environment.yml
 conda activate rhea
 ```
-We highly recommend using metaFlye v2.9.3+ due to improvements in strain variations maintained.
+
+- Step 2: Install rhea as a python package (_optional_)
+_if you want to omit this step, you can run rhea with `python rhea.py` instead of directly calling `rhea`_
+```bash
+pip install -e .
+```
+- We highly recommend using metaFlye v2.9.3+ due to improvements in strain variations maintained.
 
 ### Output files
  - `structual_variants-c{1-N}.tsv`: detected structual variants for each pair of subsequent samples. Denoted in the file name.
